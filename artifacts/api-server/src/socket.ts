@@ -12,6 +12,7 @@ interface Participant {
 
 const participants = new Map<string, Participant>();
 const OWNER_SECRET = process.env.OWNER_SECRET || "147147";
+const ROOM = "main";
 
 export function setupSocketIO(io: SocketIOServer) {
   io.on("connection", (socket: Socket) => {
@@ -33,6 +34,7 @@ export function setupSocketIO(io: SocketIOServer) {
         };
 
         participants.set(socket.id, participant);
+        socket.join(ROOM);
 
         socket.emit("joined", {
           participantId: socket.id,
@@ -49,132 +51,74 @@ export function setupSocketIO(io: SocketIOServer) {
       },
     );
 
-    // WebRTC signaling
-    socket.on(
-      "offer",
-      (data: { targetId: string; offer: RTCSessionDescriptionInit }) => {
-        const from = participants.get(socket.id);
-        if (!from) return;
-        io.to(data.targetId).emit("offer", {
-          fromId: socket.id,
-          fromName: from.name,
-          offer: data.offer,
-        });
-      },
-    );
+    // ── Audio relay ────────────────────────────────────────────────────────
+    // data is a binary Buffer; we tag it with the sender's id and broadcast
+    socket.on("audio-chunk", (data: Buffer) => {
+      socket.to(ROOM).emit("audio-chunk", { fromId: socket.id, data });
+    });
 
-    socket.on(
-      "answer",
-      (data: { targetId: string; answer: RTCSessionDescriptionInit }) => {
-        io.to(data.targetId).emit("answer", {
-          fromId: socket.id,
-          answer: data.answer,
-        });
-      },
-    );
-
-    socket.on(
-      "ice-candidate",
-      (data: { targetId: string; candidate: RTCIceCandidateInit }) => {
-        io.to(data.targetId).emit("ice-candidate", {
-          fromId: socket.id,
-          candidate: data.candidate,
-        });
-      },
-    );
-
-    // Speaking indicator
-    socket.on("speaking", (data: { isSpeaking: boolean }) => {
-      const participant = participants.get(socket.id);
-      if (!participant) return;
-      participant.isSpeaking = data.isSpeaking;
+    // ── Speaking indicator ─────────────────────────────────────────────────
+    socket.on("speaking", (d: { isSpeaking: boolean }) => {
+      const p = participants.get(socket.id);
+      if (!p) return;
+      p.isSpeaking = d.isSpeaking;
       io.emit("participant-speaking", {
         participantId: socket.id,
-        isSpeaking: data.isSpeaking,
+        isSpeaking: d.isSpeaking,
       });
     });
 
-    // Owner: mute/unmute a participant
-    socket.on("owner-mute", (data: { targetId: string; muted: boolean }) => {
+    // ── Owner: mute ────────────────────────────────────────────────────────
+    socket.on("owner-mute", (d: { targetId: string; muted: boolean }) => {
       const sender = participants.get(socket.id);
-      if (!sender?.isOwner) {
-        socket.emit("error", { message: "Not authorized" });
-        return;
-      }
-      const target = participants.get(data.targetId);
+      if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
+      const target = participants.get(d.targetId);
       if (!target) return;
-      target.isMuted = data.muted;
-      io.to(data.targetId).emit("force-mute", { muted: data.muted });
-      io.emit("participant-muted", {
-        participantId: data.targetId,
-        isMuted: data.muted,
-      });
-      logger.info(
-        { targetId: data.targetId, muted: data.muted },
-        "Owner muted participant",
-      );
+      target.isMuted = d.muted;
+      io.to(d.targetId).emit("force-mute", { muted: d.muted });
+      io.emit("participant-muted", { participantId: d.targetId, isMuted: d.muted });
+      logger.info({ targetId: d.targetId, muted: d.muted }, "Owner muted participant");
     });
 
-    // Owner: trigger scary prank on a participant
-    socket.on("owner-scare", (data: { targetId: string }) => {
+    // ── Owner: scare ───────────────────────────────────────────────────────
+    socket.on("owner-scare", (d: { targetId: string }) => {
       const sender = participants.get(socket.id);
-      if (!sender?.isOwner) {
-        socket.emit("error", { message: "Not authorized" });
-        return;
-      }
-      io.to(data.targetId).emit("scare", {});
-      logger.info({ targetId: data.targetId }, "Owner triggered scare");
+      if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
+      io.to(d.targetId).emit("scare", {});
+      logger.info({ targetId: d.targetId }, "Owner triggered scare");
     });
 
-    // Owner: toggle flashlight on a participant's device
-    socket.on(
-      "owner-flashlight",
-      (data: { targetId: string; on: boolean }) => {
-        const sender = participants.get(socket.id);
-        if (!sender?.isOwner) {
-          socket.emit("error", { message: "Not authorized" });
-          return;
-        }
-        io.to(data.targetId).emit("flashlight", { on: data.on });
-        logger.info(
-          { targetId: data.targetId, on: data.on },
-          "Owner toggled flashlight",
-        );
-      },
-    );
-
-    // Owner: kick a participant
-    socket.on("owner-kick", (data: { targetId: string }) => {
+    // ── Owner: flashlight ──────────────────────────────────────────────────
+    socket.on("owner-flashlight", (d: { targetId: string; on: boolean }) => {
       const sender = participants.get(socket.id);
-      if (!sender?.isOwner) {
-        socket.emit("error", { message: "Not authorized" });
-        return;
-      }
-      io.to(data.targetId).emit("kicked", {});
-      const kicked = participants.get(data.targetId);
-      logger.info(
-        { targetId: data.targetId, name: kicked?.name },
-        "Owner kicked participant",
-      );
+      if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
+      io.to(d.targetId).emit("flashlight", { on: d.on });
+      logger.info({ targetId: d.targetId, on: d.on }, "Owner toggled flashlight");
     });
 
-    // Participant self-mute
-    socket.on("self-mute", (data: { muted: boolean }) => {
-      const participant = participants.get(socket.id);
-      if (!participant) return;
-      participant.isMuted = data.muted;
-      io.emit("participant-muted", {
-        participantId: socket.id,
-        isMuted: data.muted,
-      });
+    // ── Owner: kick ────────────────────────────────────────────────────────
+    socket.on("owner-kick", (d: { targetId: string }) => {
+      const sender = participants.get(socket.id);
+      if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
+      io.to(d.targetId).emit("kicked", {});
+      logger.info({ targetId: d.targetId }, "Owner kicked participant");
     });
 
+    // ── Self-mute ──────────────────────────────────────────────────────────
+    socket.on("self-mute", (d: { muted: boolean }) => {
+      const p = participants.get(socket.id);
+      if (!p) return;
+      p.isMuted = d.muted;
+      io.emit("participant-muted", { participantId: socket.id, isMuted: d.muted });
+    });
+
+    // ── Disconnect ─────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
-      const participant = participants.get(socket.id);
+      const p = participants.get(socket.id);
       participants.delete(socket.id);
-      if (participant) {
+      if (p) {
         io.emit("participant-left", { participantId: socket.id });
-        logger.info({ name: participant.name }, "Participant left room");
+        logger.info({ name: p.name }, "Participant left room");
       }
     });
   });

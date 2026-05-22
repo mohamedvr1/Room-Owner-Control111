@@ -11,7 +11,7 @@ interface Participant {
 }
 
 const participants = new Map<string, Participant>();
-const OWNER_SECRET = process.env.OWNER_SECRET || "owner123";
+const OWNER_SECRET = process.env.OWNER_SECRET || "147147";
 
 export function setupSocketIO(io: SocketIOServer) {
   io.on("connection", (socket: Socket) => {

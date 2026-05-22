@@ -1,22 +1,22 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Voice Room API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: room
+    description: Voice room operations
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +24,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /room:
+    get:
+      operationId: getRoom
+      tags: [room]
+      summary: Get room info and participants
+      responses:
+        "200":
+          description: Room info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomInfo"
+  /room/join:
+    post:
+      operationId: joinRoom
+      tags: [room]
+      summary: Join the voice room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinRoomInput"
+      responses:
+        "200":
+          description: Joined room successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinResult"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +63,60 @@ components:
           type: string
       required:
         - status
-
+    Participant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isMuted:
+          type: boolean
+        isOwner:
+          type: boolean
+        isSpeaking:
+          type: boolean
+      required:
+        - id
+        - name
+        - isMuted
+        - isOwner
+        - isSpeaking
+    RoomInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        participantCount:
+          type: integer
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Participant"
+      required:
+        - name
+        - participantCount
+        - participants
+    JoinRoomInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        isOwner:
+          type: boolean
+      required:
+        - name
+    JoinResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        participantId:
+          type: string
+        isOwner:
+          type: boolean
+      required:
+        - success
+        - participantId
+        - isOwner

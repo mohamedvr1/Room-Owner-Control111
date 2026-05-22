@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "HPyJQ325IzJ_XdPt60fMO"
+uri = "file://artifacts/voice-room/src/assets/scary-face.png"
+type = "image"
+title = "scary ghost face horror"

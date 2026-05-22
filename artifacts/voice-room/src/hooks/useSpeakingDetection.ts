@@ -6,8 +6,8 @@ export function useSpeakingDetection(localStream: MediaStream | null, muted: boo
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const dataArrayRef = useRef<Uint8Array | null>(null);
-  const requestRef = useRef<number>();
+  const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const requestRef = useRef<number | undefined>(undefined);
   const isSpeakingRef = useRef(false);
 
   useEffect(() => {

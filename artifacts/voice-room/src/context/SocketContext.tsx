@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
-import { Participant } from "@workspace/api-client-react/src/generated/api.schemas";
+import { Participant } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
@@ -20,6 +20,7 @@ interface SocketContextState {
   ownerKick: (targetId: string) => void;
   scareTriggered: boolean;
   flashlightOn: boolean;
+  isForceMuted: boolean;
   clearScare: () => void;
 }
 
@@ -34,6 +35,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   
   const [scareTriggered, setScareTriggered] = useState(false);
   const [flashlightOn, setFlashlightOn] = useState(false);
+  const [isForceMuted, setIsForceMuted] = useState(false);
   
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -73,11 +75,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     newSocket.on("force-mute", ({ muted }: { muted: boolean }) => {
+      setIsForceMuted(muted);
       toast({
-        title: muted ? "You have been muted by the owner." : "You have been unmuted by the owner.",
-        variant: muted ? "destructive" : "default"
+        title: muted ? "تم كتم صوتك من قبل الأونر" : "تم رفع كتم صوتك",
+        variant: muted ? "destructive" : "default",
       });
-      // In a real app we'd control the mic stream directly based on this event.
     });
 
     newSocket.on("scare", () => {
@@ -144,7 +146,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket, participants, participantId, isOwner, isConnected,
       joinRoom, leaveRoom, setSelfMuted, setSpeaking,
       ownerMute, ownerScare, ownerFlashlight, ownerKick,
-      scareTriggered, flashlightOn, clearScare
+      scareTriggered, flashlightOn, isForceMuted, clearScare
     }}>
       {children}
     </SocketContext.Provider>

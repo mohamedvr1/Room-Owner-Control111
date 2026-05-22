@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Participant } from "@workspace/api-client-react/src/generated/api.schemas";
+import { Participant } from "@workspace/api-client-react";
 import { useSocket } from "@/context/SocketContext";
 import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";

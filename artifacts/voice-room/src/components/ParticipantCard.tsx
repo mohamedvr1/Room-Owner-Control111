@@ -1,91 +1,158 @@
-import React from "react";
+import { useState } from "react";
 import { Participant } from "@workspace/api-client-react/src/generated/api.schemas";
 import { useSocket } from "@/context/SocketContext";
-import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert } from "lucide-react";
+import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function ParticipantCard({ participant }: { participant: Participant }) {
   const { isOwner, participantId, ownerMute, ownerScare, ownerFlashlight, ownerKick } = useSocket();
   const isSelf = participant.id === participantId;
+  const [selected, setSelected] = useState(false);
+
+  const isOwnerCard = participant.isOwner;
+
+  const handleClick = () => {
+    if (isOwner && !isSelf) setSelected(prev => !prev);
+  };
 
   return (
-    <div className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-500
-      ${participant.isSpeaking ? 'border-primary shadow-[0_0_15px_rgba(255,0,0,0.5)] animate-pulse-glow bg-card/80' : 'border-border bg-card/40 hover:bg-card/60'}
-    `} data-testid={`card-participant-${participant.id}`}>
-      
-      <div className="flex flex-col h-full gap-4">
+    <div
+      onClick={handleClick}
+      className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-300
+        ${isOwnerCard
+          ? "border-amber-500/70 shadow-[0_0_18px_rgba(245,158,11,0.35)] bg-gradient-to-b from-amber-950/40 to-card/60"
+          : participant.isSpeaking
+            ? "border-primary shadow-[0_0_15px_rgba(220,38,38,0.45)] animate-pulse-glow bg-card/80"
+            : "border-border bg-card/40"
+        }
+        ${isOwner && !isSelf ? "cursor-pointer hover:border-primary/60 hover:scale-[1.02]" : ""}
+        ${selected ? "ring-2 ring-primary/60 scale-[1.02]" : ""}
+      `}
+      data-testid={`card-participant-${participant.id}`}
+    >
+      {/* Owner crown strip */}
+      {isOwnerCard && (
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
+      )}
+
+      <div className="flex flex-col h-full gap-3">
         <div className="flex items-center gap-3">
+          {/* Avatar */}
           <div className="relative">
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center bg-background border
-              ${participant.isOwner ? 'border-accent text-accent' : 'border-muted text-muted-foreground'}
-              ${participant.isSpeaking ? 'animate-heartbeat' : ''}
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 transition-all duration-300
+              ${isOwnerCard
+                ? "border-amber-400 bg-amber-950/60 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
+                : participant.isSpeaking
+                  ? "border-primary text-primary animate-heartbeat"
+                  : "border-muted text-muted-foreground bg-background"
+              }
             `}>
               <Ghost className="w-6 h-6" />
             </div>
-            {participant.isSpeaking && (
+
+            {participant.isSpeaking && !participant.isMuted && (
               <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-primary rounded-full animate-ping" />
             )}
             {participant.isMuted && (
-              <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-destructive rounded-full flex items-center justify-center text-destructive-foreground">
-                <MicOff className="w-3 h-3" />
+              <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-destructive rounded-full flex items-center justify-center">
+                <MicOff className="w-3 h-3 text-destructive-foreground" />
               </span>
             )}
           </div>
+
+          {/* Name */}
           <div className="flex-1 min-w-0">
-            <p className="font-bold text-lg truncate text-foreground flex items-center gap-2">
+            <p className={`font-bold text-sm truncate flex items-center gap-1.5
+              ${isOwnerCard ? "text-amber-300" : "text-foreground"}
+            `}>
               {participant.name}
               {isSelf && <span className="text-xs font-normal text-muted-foreground">(You)</span>}
-              {participant.isOwner && <ShieldAlert className="w-4 h-4 text-accent" />}
             </p>
+            {isOwnerCard && (
+              <p className="text-[10px] text-amber-500/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                <ShieldAlert className="w-3 h-3" /> Owner
+              </p>
+            )}
           </div>
+
+          {/* Close selected */}
+          {selected && isOwner && !isSelf && (
+            <button
+              onClick={e => { e.stopPropagation(); setSelected(false); }}
+              className="text-muted-foreground hover:text-foreground"
+              data-testid={`button-closecontrols-${participant.id}`}
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
         </div>
 
-        {isOwner && !isSelf && (
-          <div className="pt-2 mt-auto border-t border-border/50 grid grid-cols-4 gap-1">
-            <Button 
-              variant="outline" 
-              size="icon" 
-              className={`h-8 border-none hover:bg-destructive/20 hover:text-destructive ${participant.isMuted ? 'text-destructive bg-destructive/10' : 'text-muted-foreground'}`}
+        {/* Owner controls — shown only when card is selected */}
+        {isOwner && !isSelf && selected && (
+          <div
+            onClick={e => e.stopPropagation()}
+            className="pt-2 border-t border-primary/20 grid grid-cols-2 gap-1.5"
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              className={`h-8 text-xs border-border/50 gap-1.5 transition-all
+                ${participant.isMuted
+                  ? "text-destructive bg-destructive/10 border-destructive/40 hover:bg-destructive/20"
+                  : "text-muted-foreground hover:text-destructive hover:bg-destructive/10 hover:border-destructive/40"
+                }`}
               onClick={() => ownerMute(participant.id, !participant.isMuted)}
-              title={participant.isMuted ? "Unmute" : "Mute"}
               data-testid={`button-ownermute-${participant.id}`}
             >
-              {participant.isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              {participant.isMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+              {participant.isMuted ? "Unmute" : "Mute"}
             </Button>
-            
-            <Button 
-              variant="outline" 
-              size="icon" 
-              className="h-8 border-none text-muted-foreground hover:bg-primary/20 hover:text-primary"
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 hover:border-primary/40"
               onClick={() => ownerScare(participant.id)}
-              title="Jump Scare"
               data-testid={`button-ownerscare-${participant.id}`}
             >
-              <Zap className="w-4 h-4" />
+              <Zap className="w-3 h-3" /> Scare
             </Button>
-            
-            <Button 
-              variant="outline" 
-              size="icon" 
-              className="h-8 border-none text-muted-foreground hover:bg-yellow-500/20 hover:text-yellow-500"
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-yellow-400 hover:bg-yellow-500/10 hover:border-yellow-500/40"
               onClick={() => ownerFlashlight(participant.id, true)}
-              title="Flashlight On"
-              data-testid={`button-ownerflashlight-${participant.id}`}
+              data-testid={`button-ownerflashon-${participant.id}`}
             >
-              <Power className="w-4 h-4" />
+              <Power className="w-3 h-3" /> Flash ON
             </Button>
-            
-            <Button 
-              variant="outline" 
-              size="icon" 
-              className="h-8 border-none text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-slate-400 hover:bg-slate-500/10 hover:border-slate-500/40"
+              onClick={() => ownerFlashlight(participant.id, false)}
+              data-testid={`button-ownerflashoff-${participant.id}`}
+            >
+              <PowerOff className="w-3 h-3" /> Flash OFF
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs col-span-2 border-destructive/30 gap-1.5 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
               onClick={() => ownerKick(participant.id)}
-              title="Kick"
               data-testid={`button-ownerkick-${participant.id}`}
             >
-              <UserMinus className="w-4 h-4" />
+              <UserMinus className="w-3 h-3" /> Kick Out
             </Button>
           </div>
+        )}
+
+        {/* Hint for owner on non-self cards */}
+        {isOwner && !isSelf && !selected && (
+          <p className="text-[10px] text-muted-foreground/40 font-mono text-center">tap to control</p>
         )}
       </div>
     </div>

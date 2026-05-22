@@ -45,10 +45,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     setSocket(newSocket);
 
     newSocket.on("connect", () => setIsConnected(true));
+    // On unexpected disconnect: mark offline but DON'T clear room state or redirect.
+    // Socket.IO will auto-reconnect; on reconnect we stay on the room page.
     newSocket.on("disconnect", () => {
       setIsConnected(false);
-      setParticipantId(null);
-      setParticipants([]);
     });
 
     newSocket.on("joined", (data: { participantId: string, isOwner: boolean, participants: Participant[] }) => {

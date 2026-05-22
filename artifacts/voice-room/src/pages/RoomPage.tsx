@@ -14,6 +14,7 @@ export default function RoomPage() {
     participants,
     participantId,
     isConnected,
+    isOwner,
     setSelfMuted,
     leaveRoom,
     flashlightOn,
@@ -28,22 +29,31 @@ export default function RoomPage() {
   const flashlightStreamRef = useRef<MediaStream | null>(null);
 
   const effectiveMuted = isMuted || isForceMuted;
+  const [confirmLeave, setConfirmLeave] = useState(false);
 
   // Audio relay via server (guaranteed to work on any network)
   useAudioRelay(localStream, effectiveMuted, isSpeakerOff);
   useSpeakingDetection(localStream, effectiveMuted);
 
-  // Redirect if not in room
+  // Only redirect if we never joined (no participantId) — not on temporary disconnect
   useEffect(() => {
-    if (!isConnected || !participantId) setLocation("/");
-  }, [isConnected, participantId, setLocation]);
+    if (!participantId) setLocation("/");
+  }, [participantId, setLocation]);
 
   // Request mic
   useEffect(() => {
     let stream: MediaStream;
     async function getMic() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000,
+          },
+          video: false,
+        });
         setLocalStream(stream);
       } catch {
         toast({
@@ -142,7 +152,7 @@ export default function RoomPage() {
             variant="outline"
             size="lg"
             className="rounded-full w-16 h-16 border-border/50 hover:bg-destructive/20 hover:text-destructive hover:border-destructive/50 transition-all"
-            onClick={leaveRoom}
+            onClick={() => setConfirmLeave(true)}
             data-testid="button-leaveroom"
           >
             <LogOut className="w-6 h-6" />
@@ -155,6 +165,33 @@ export default function RoomPage() {
           </p>
         )}
       </footer>
+
+      {/* Leave confirmation dialog */}
+      {confirmLeave && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-lg p-6 max-w-xs w-full mx-4 text-center space-y-4 shadow-2xl">
+            <Ghost className="w-10 h-10 text-primary mx-auto" />
+            <h2 className="font-mono font-bold text-lg text-foreground">مغادرة الروم؟</h2>
+            <p className="text-sm text-muted-foreground">هتخرج من GhostRoom. عايز تكمّل؟</p>
+            <div className="flex gap-3 justify-center">
+              <Button
+                variant="outline"
+                className="flex-1 border-border/60"
+                onClick={() => setConfirmLeave(false)}
+              >
+                لأ، ابقى
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1"
+                onClick={() => { setConfirmLeave(false); leaveRoom(); }}
+              >
+                اخرج
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

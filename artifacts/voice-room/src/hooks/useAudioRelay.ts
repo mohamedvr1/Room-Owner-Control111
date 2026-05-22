@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useSocket } from "../context/SocketContext";
 
-const CHUNK_MS = 400; // record a complete file every 400 ms
+const CHUNK_MS = 150; // record a complete file every 150 ms
 
 // Prefer Opus inside WebM; fall back to whatever the browser supports
 function bestMimeType(): string {

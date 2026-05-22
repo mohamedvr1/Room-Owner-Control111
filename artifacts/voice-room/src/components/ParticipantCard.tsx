@@ -20,7 +20,7 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
       onClick={handleClick}
       className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-300
         ${isOwnerCard
-          ? "border-amber-500/70 shadow-[0_0_18px_rgba(245,158,11,0.35)] bg-gradient-to-b from-amber-950/40 to-card/60"
+          ? "animate-owner-border bg-gradient-to-b from-amber-950/40 to-card/60"
           : participant.isSpeaking
             ? "border-primary shadow-[0_0_15px_rgba(220,38,38,0.45)] animate-pulse-glow bg-card/80"
             : "border-border bg-card/40"

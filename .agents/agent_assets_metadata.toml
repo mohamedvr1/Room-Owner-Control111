@@ -1,8 +1,13 @@
 uploads = []
-outputs = []
 
 [[generated]]
 id = "HPyJQ325IzJ_XdPt60fMO"
 uri = "file://artifacts/voice-room/src/assets/scary-face.png"
 type = "image"
 title = "scary ghost face horror"
+
+[[outputs]]
+id = "RL6nQ-qQv_7DkBxiCd-4y"
+uri = "file://ghostroom.tar.gz"
+type = "unspecified"
+title = "GhostRoom — ملفات المشروع الكاملة"

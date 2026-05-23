@@ -6,7 +6,7 @@ interface Participant {
   name: string;
   isMuted: boolean;
   isOwner: boolean;
-  isSuperOwner: boolean;
+  isRM: boolean;
   isSpeaking: boolean;
   socketId: string;
 }
@@ -22,7 +22,7 @@ function sanitize(p: Participant) {
     name: p.name,
     isMuted: p.isMuted,
     isOwner: p.isOwner,
-    isSuperOwner: p.isSuperOwner,
+    isRM: p.isRM,
     isSpeaking: p.isSpeaking,
   };
 }
@@ -34,15 +34,15 @@ export function setupSocketIO(io: SocketIOServer) {
     socket.on(
       "join",
       (data: { name: string; isOwner?: boolean; ownerSecret?: string }) => {
-        const isSuperOwner = data.ownerSecret === SUPER_SECRET;
-        const isOwner = isSuperOwner || data.ownerSecret === OWNER_SECRET;
+        const isRM = data.ownerSecret === SUPER_SECRET;
+        const isOwner = data.ownerSecret === OWNER_SECRET;
 
         const participant: Participant = {
           id: socket.id,
           name: data.name || "Anonymous",
           isMuted: false,
           isOwner,
-          isSuperOwner,
+          isRM,
           isSpeaking: false,
           socketId: socket.id,
         };
@@ -53,14 +53,14 @@ export function setupSocketIO(io: SocketIOServer) {
         socket.emit("joined", {
           participantId: socket.id,
           isOwner,
-          isSuperOwner,
+          isRM,
           participants: Array.from(participants.values()).map(sanitize),
         });
 
         socket.broadcast.emit("participant-joined", sanitize(participant));
 
         logger.info(
-          { name: participant.name, isOwner, isSuperOwner },
+          { name: participant.name, isOwner, isRM },
           "Participant joined room",
         );
       },

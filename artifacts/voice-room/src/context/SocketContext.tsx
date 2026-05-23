@@ -4,7 +4,7 @@ import { Participant } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
-export type SocketParticipant = Participant & { isSuperOwner?: boolean };
+export type SocketParticipant = Participant & { isRM?: boolean };
 
 interface JoinData {
   name: string;
@@ -17,7 +17,7 @@ interface SocketContextState {
   participants: SocketParticipant[];
   participantId: string | null;
   isOwner: boolean;
-  isSuperOwner: boolean;
+  isRM: boolean;
   isConnected: boolean;
   joinRoom: (name: string, isOwner: boolean, ownerSecret?: string) => void;
   leaveRoom: () => void;
@@ -40,7 +40,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [participants, setParticipants] = useState<SocketParticipant[]>([]);
   const [participantId, setParticipantId] = useState<string | null>(null);
   const [isOwner, setIsOwner] = useState(false);
-  const [isSuperOwner, setIsSuperOwner] = useState(false);
+  const [isRM, setIsRM] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [scareTriggered, setScareTriggered] = useState(false);
   const [flashlightOn, setFlashlightOn] = useState(false);
@@ -85,12 +85,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     newSocket.on("joined", (data: {
       participantId: string;
       isOwner: boolean;
-      isSuperOwner: boolean;
+      isRM: boolean;
       participants: SocketParticipant[];
     }) => {
       setParticipantId(data.participantId);
       setIsOwner(data.isOwner);
-      setIsSuperOwner(data.isSuperOwner ?? false);
+      setIsRM(data.isRM ?? false);
       setParticipants(data.participants);
       inRoomRef.current = true;
       setLocation("/room");
@@ -135,7 +135,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setParticipantId(null);
       setParticipants([]);
       setIsOwner(false);
-      setIsSuperOwner(false);
+      setIsRM(false);
       setLocation("/");
       setTimeout(() => newSocket.connect(), 100);
     });
@@ -165,7 +165,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setParticipantId(null);
       setParticipants([]);
       setIsOwner(false);
-      setIsSuperOwner(false);
+      setIsRM(false);
       setLocation("/");
       setTimeout(() => socket.connect(), 100);
     }
@@ -181,7 +181,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   return (
     <SocketContext.Provider value={{
-      socket, participants, participantId, isOwner, isSuperOwner, isConnected,
+      socket, participants, participantId, isOwner, isRM, isConnected,
       joinRoom, leaveRoom, setSelfMuted, setSpeaking,
       ownerMute, ownerScare, ownerFlashlight, ownerKick,
       scareTriggered, flashlightOn, isForceMuted, clearScare,

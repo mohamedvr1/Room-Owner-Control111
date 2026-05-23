@@ -8,8 +8,8 @@ export function ParticipantCard({ participant }: { participant: SocketParticipan
   const isSelf = participant.id === participantId;
   const [selected, setSelected] = useState(false);
 
-  const isSuperOwnerCard = !!participant.isSuperOwner;
-  const isOwnerCard = participant.isOwner && !isSuperOwnerCard;
+  const isRMCard = !!participant.isRM;
+  const isOwnerCard = participant.isOwner && !isRMCard;
 
   const handleClick = () => {
     if (isOwner && !isSelf) setSelected(prev => !prev);
@@ -19,7 +19,7 @@ export function ParticipantCard({ participant }: { participant: SocketParticipan
     <div
       onClick={handleClick}
       className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-300
-        ${isSuperOwnerCard
+        ${isRMCard
           ? "animate-super-owner-border bg-gradient-to-b from-pink-950/40 to-card/60"
           : isOwnerCard
             ? "border-amber-500/70 shadow-[0_0_18px_rgba(245,158,11,0.35)] bg-gradient-to-b from-amber-950/40 to-card/60"
@@ -33,7 +33,7 @@ export function ParticipantCard({ participant }: { participant: SocketParticipan
       data-testid={`card-participant-${participant.id}`}
     >
       {/* Top strip */}
-      {isSuperOwnerCard && (
+      {isRMCard && (
         <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-pink-400 to-transparent" />
       )}
       {isOwnerCard && (
@@ -45,7 +45,7 @@ export function ParticipantCard({ participant }: { participant: SocketParticipan
           {/* Avatar */}
           <div className="relative">
             <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 transition-all duration-300
-              ${isSuperOwnerCard
+              ${isRMCard
                 ? "border-pink-400 bg-pink-950/60 text-pink-300 shadow-[0_0_10px_rgba(236,72,153,0.5)]"
                 : isOwnerCard
                   ? "border-amber-400 bg-amber-950/60 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
@@ -70,14 +70,14 @@ export function ParticipantCard({ participant }: { participant: SocketParticipan
           {/* Name */}
           <div className="flex-1 min-w-0">
             <p className={`font-bold text-sm truncate flex items-center gap-1.5
-              ${isSuperOwnerCard ? "text-pink-300" : isOwnerCard ? "text-amber-300" : "text-foreground"}
+              ${isRMCard ? "text-pink-300" : isOwnerCard ? "text-amber-300" : "text-foreground"}
             `}>
               {participant.name}
               {isSelf && <span className="text-xs font-normal text-muted-foreground">(You)</span>}
             </p>
-            {isSuperOwnerCard && (
+            {isRMCard && (
               <p className="text-[10px] text-pink-400/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                <Crown className="w-3 h-3" /> Super Owner
+                <Crown className="w-3 h-3" /> RM
               </p>
             )}
             {isOwnerCard && (

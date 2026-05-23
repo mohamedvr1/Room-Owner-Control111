@@ -8,6 +8,7 @@ interface Participant {
   isOwner: boolean;
   isRM: boolean;
   isSpeaking: boolean;
+  borderStyle: string;
   socketId: string;
 }
 
@@ -24,6 +25,7 @@ function sanitize(p: Participant) {
     isOwner: p.isOwner,
     isRM: p.isRM,
     isSpeaking: p.isSpeaking,
+    borderStyle: p.borderStyle,
   };
 }
 
@@ -33,7 +35,12 @@ export function setupSocketIO(io: SocketIOServer) {
 
     socket.on(
       "join",
-      (data: { name: string; isOwner?: boolean; ownerSecret?: string }) => {
+      (data: {
+        name: string;
+        isOwner?: boolean;
+        ownerSecret?: string;
+        borderStyle?: string;
+      }) => {
         const isRM = data.ownerSecret === SUPER_SECRET;
         const isOwner = data.ownerSecret === OWNER_SECRET;
 
@@ -44,6 +51,7 @@ export function setupSocketIO(io: SocketIOServer) {
           isOwner,
           isRM,
           isSpeaking: false,
+          borderStyle: data.borderStyle || "default",
           socketId: socket.id,
         };
 
@@ -59,16 +67,13 @@ export function setupSocketIO(io: SocketIOServer) {
 
         socket.broadcast.emit("participant-joined", sanitize(participant));
 
-        logger.info(
-          { name: participant.name, isOwner, isRM },
-          "Participant joined room",
-        );
+        logger.info({ name: participant.name, isOwner, isRM }, "Participant joined room");
       },
     );
 
-    // ── Audio relay ────────────────────────────────────────────────────────
-    socket.on("audio-chunk", (data: Buffer) => {
-      socket.to(ROOM).emit("audio-chunk", { fromId: socket.id, data });
+    // ── PCM audio relay (zero-gap, continuous stream) ──────────────────────
+    socket.on("audio-pcm", (data: Buffer) => {
+      socket.to(ROOM).emit("audio-pcm", { fromId: socket.id, data });
     });
 
     // ── Speaking indicator ─────────────────────────────────────────────────
@@ -76,10 +81,7 @@ export function setupSocketIO(io: SocketIOServer) {
       const p = participants.get(socket.id);
       if (!p) return;
       p.isSpeaking = d.isSpeaking;
-      io.emit("participant-speaking", {
-        participantId: socket.id,
-        isSpeaking: d.isSpeaking,
-      });
+      io.emit("participant-speaking", { participantId: socket.id, isSpeaking: d.isSpeaking });
     });
 
     // ── Owner: mute ────────────────────────────────────────────────────────

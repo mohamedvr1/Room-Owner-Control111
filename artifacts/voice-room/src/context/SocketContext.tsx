@@ -4,12 +4,13 @@ import { Participant } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
-export type SocketParticipant = Participant & { isRM?: boolean };
+export type SocketParticipant = Participant & { isRM?: boolean; borderStyle?: string };
 
 interface JoinData {
   name: string;
   isOwner: boolean;
   ownerSecret?: string;
+  borderStyle?: string;
 }
 
 interface SocketContextState {
@@ -19,7 +20,7 @@ interface SocketContextState {
   isOwner: boolean;
   isRM: boolean;
   isConnected: boolean;
-  joinRoom: (name: string, isOwner: boolean, ownerSecret?: string) => void;
+  joinRoom: (name: string, isOwner: boolean, ownerSecret?: string, borderStyle?: string) => void;
   leaveRoom: () => void;
   setSelfMuted: (muted: boolean) => void;
   setSpeaking: (isSpeaking: boolean) => void;
@@ -46,9 +47,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [flashlightOn, setFlashlightOn] = useState(false);
   const [isForceMuted, setIsForceMuted] = useState(false);
 
-  // Stored join data so we can auto-rejoin after reconnect
   const joinDataRef = useRef<JoinData | null>(null);
-  // Track if we need to stay on room page (don't redirect on rejoin)
   const inRoomRef = useRef(false);
 
   const { toast } = useToast();
@@ -67,16 +66,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
     newSocket.on("connect", () => {
       setIsConnected(true);
-      // Auto-rejoin if we were in a room before an unexpected disconnect
       if (joinDataRef.current && inRoomRef.current) {
         newSocket.emit("join", joinDataRef.current);
       }
     });
 
-    // On unexpected disconnect: don't clear state or redirect — Socket.IO reconnects automatically
     newSocket.on("disconnect", (reason) => {
       setIsConnected(false);
-      // Only clear room state on deliberate disconnect (transport close by us)
       if (reason === "io client disconnect") {
         inRoomRef.current = false;
       }
@@ -114,10 +110,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
     newSocket.on("force-mute", ({ muted }: { muted: boolean }) => {
       setIsForceMuted(muted);
-      toast({
-        title: muted ? "تم كتم صوتك من قبل الأونر" : "تم رفع كتم صوتك",
-        variant: muted ? "destructive" : "default",
-      });
+      toast({ title: muted ? "تم كتم صوتك من قبل الأونر" : "تم رفع كتم صوتك", variant: muted ? "destructive" : "default" });
     });
 
     newSocket.on("scare", () => {
@@ -148,9 +141,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     return () => { newSocket.disconnect(); };
   }, [setLocation, toast]);
 
-  const joinRoom = (name: string, isOwnerReq: boolean, ownerSecret?: string) => {
+  const joinRoom = (name: string, isOwnerReq: boolean, ownerSecret?: string, borderStyle?: string) => {
     if (socket) {
-      const data: JoinData = { name, isOwner: isOwnerReq, ownerSecret };
+      const data: JoinData = { name, isOwner: isOwnerReq, ownerSecret, borderStyle };
       joinDataRef.current = data;
       socket.emit("join", data);
     }

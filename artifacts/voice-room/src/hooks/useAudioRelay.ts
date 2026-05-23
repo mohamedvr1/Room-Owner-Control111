@@ -1,58 +1,55 @@
 import { useEffect, useRef } from "react";
 import { useSocket } from "../context/SocketContext";
 
-const CHUNK_MS = 100; // ultra-low latency chunks
-
-function bestMimeType(): string {
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/ogg",
-  ];
-  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
-}
+const SAMPLE_RATE = 16000;
+const BUFFER_SIZE = 1024; // 64 ms chunks — very low latency
+const PLAY_BUFFER = 0.12; // 120 ms jitter buffer
 
 export function useAudioRelay(
   localStream: MediaStream | null,
   isMuted: boolean,
   isSpeakerOff: boolean,
 ) {
-  const { socket, participantId } = useSocket();
+  const { socket } = useSocket();
 
-  // ── AudioContext + processing chain ───────────────────────────────────────
-  // chain: incoming → gainNode → compressor → destination
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  // Use refs so callbacks always see fresh values
+  const isMutedRef = useRef(isMuted);
+  const socketRef = useRef(socket);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+  useEffect(() => { socketRef.current = socket; }, [socket]);
+
+  // ── Playback AudioContext ─────────────────────────────────────────────────
+  const playCtxRef = useRef<AudioContext | null>(null);
   const gainRef = useRef<GainNode | null>(null);
-  const compressorRef = useRef<DynamicsCompressorNode | null>(null);
+  const compRef = useRef<DynamicsCompressorNode | null>(null);
   const nextTimeRef = useRef<number>(0);
 
   useEffect(() => {
-    const ctx = new AudioContext({ sampleRate: 16000 });
+    const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
-    // Compressor — makes audio sound punchy & clear like a phone call
-    const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -20;
-    compressor.knee.value = 10;
-    compressor.ratio.value = 8;
-    compressor.attack.value = 0.002;
-    compressor.release.value = 0.15;
+    // Compressor → gain → out  (makes voice very clear and loud)
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 8;
+    comp.ratio.value = 10;
+    comp.attack.value = 0.001;
+    comp.release.value = 0.1;
 
-    // Gain — boost the volume to make it powerful
     const gain = ctx.createGain();
-    gain.gain.value = 2.2; // loud & clear
+    gain.gain.value = 2.0;
 
-    gain.connect(compressor);
-    compressor.connect(ctx.destination);
+    comp.connect(gain);
+    gain.connect(ctx.destination);
 
-    audioCtxRef.current = ctx;
+    playCtxRef.current = ctx;
     gainRef.current = gain;
-    compressorRef.current = compressor;
+    compRef.current = comp;
 
+    // Resume AudioContext after first user interaction
     const unlock = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
     document.addEventListener("click", unlock);
     document.addEventListener("touchend", unlock);
-    ctx.resume().catch(() => {}); // try immediately after user joined
+    ctx.resume().catch(() => {});
 
     return () => {
       document.removeEventListener("click", unlock);
@@ -61,79 +58,74 @@ export function useAudioRelay(
     };
   }, []);
 
-  // Speaker on/off via gain
+  // Speaker toggle
   useEffect(() => {
-    if (gainRef.current) gainRef.current.gain.value = isSpeakerOff ? 0 : 2.2;
+    if (gainRef.current) gainRef.current.gain.value = isSpeakerOff ? 0 : 2.0;
   }, [isSpeakerOff]);
 
-  // ── Sender: capture & relay ───────────────────────────────────────────────
+  // ── Sender: ScriptProcessorNode → raw PCM ────────────────────────────────
+  // No MediaRecorder gaps — continuous PCM stream with zero cutting
   useEffect(() => {
-    if (!socket || !localStream) return;
+    if (!localStream) return;
 
-    let active = true;
-    const mimeType = bestMimeType();
+    const captureCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    const source = captureCtx.createMediaStreamSource(localStream);
 
-    function cycle() {
-      if (!active || !localStream) return;
+    // @ts-ignore — deprecated but widely supported and reliable
+    const processor = captureCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
-      const rec = new MediaRecorder(localStream, mimeType ? { mimeType } : undefined);
-      const chunks: Blob[] = [];
+    source.connect(processor);
+    // Must connect to destination to keep the node alive
+    processor.connect(captureCtx.destination);
 
-      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      if (isMutedRef.current) return;
+      const s = socketRef.current;
+      if (!s?.connected) return;
 
-      rec.onstop = () => {
-        if (!active) return;
-        if (!isMuted && chunks.length > 0) {
-          const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
-          blob.arrayBuffer().then((buf) => {
-            if (active && socket?.connected) socket.emit("audio-chunk", buf);
-          });
-        }
-        cycle();
-      };
+      // Copy channel data and send raw PCM Float32Array
+      const raw = e.inputBuffer.getChannelData(0);
+      const pcm = new Float32Array(raw); // copy — don't hold reference
+      s.emit("audio-pcm", pcm.buffer);
+    };
 
-      rec.onerror = () => { if (active) cycle(); };
+    return () => {
+      processor.disconnect();
+      source.disconnect();
+      captureCtx.close().catch(() => {});
+    };
+  }, [localStream]);
 
-      try {
-        rec.start();
-        setTimeout(() => { if (rec.state === "recording") rec.stop(); }, CHUNK_MS);
-      } catch {
-        setTimeout(cycle, CHUNK_MS);
-      }
-    }
-
-    cycle();
-    return () => { active = false; };
-  }, [socket, localStream, isMuted]);
-
-  // ── Receiver: decode & schedule playback ──────────────────────────────────
+  // ── Receiver: schedule PCM buffers for seamless playback ─────────────────
   useEffect(() => {
     if (!socket) return;
 
-    const onChunk = async ({ fromId, data }: { fromId: string; data: ArrayBuffer }) => {
-      if (fromId === participantId) return;
-      const ctx = audioCtxRef.current;
-      if (!ctx) return;
+    const onPcm = ({ data }: { fromId: string; data: ArrayBuffer }) => {
+      const ctx = playCtxRef.current;
+      if (!ctx || !data) return;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
 
-      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+      const float32 = new Float32Array(data);
+      if (float32.length === 0) return;
 
-      try {
-        const decoded = await ctx.decodeAudioData(data.slice(0));
-        const src = ctx.createBufferSource();
-        src.buffer = decoded;
-        src.connect(gainRef.current ?? ctx.destination);
+      const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
+      buf.getChannelData(0).set(float32);
 
-        const now = ctx.currentTime;
-        // Tiny 10ms safety gap to prevent gaps
-        const start = Math.max(nextTimeRef.current, now + 0.01);
-        src.start(start);
-        nextTimeRef.current = start + decoded.duration;
-      } catch {
-        // skip failed chunk
-      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(compRef.current ?? gainRef.current ?? ctx.destination);
+
+      const now = ctx.currentTime;
+
+      // Reset if nextTime drifted too far ahead (e.g. tab was backgrounded)
+      if (nextTimeRef.current > now + 1.5) nextTimeRef.current = now + PLAY_BUFFER;
+
+      const start = Math.max(nextTimeRef.current, now + PLAY_BUFFER);
+      src.start(start);
+      nextTimeRef.current = start + buf.duration;
     };
 
-    socket.on("audio-chunk", onChunk);
-    return () => { socket.off("audio-chunk", onChunk); };
-  }, [socket, participantId]);
+    socket.on("audio-pcm", onPcm);
+    return () => { socket.off("audio-pcm", onPcm); };
+  }, [socket]);
 }

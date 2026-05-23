@@ -206,29 +206,7 @@
   42% { transform: scale(1.1); }
   70% { transform: scale(1); }
 }
-@keyframes super-owner-border {
-  0%, 100% {
-    box-shadow:
-      0 0 0 2px rgba(236,72,153,0.9),
-      0 0 14px 5px rgba(236,72,153,0.6),
-      0 0 32px 10px rgba(219,39,119,0.3);
-    border-color: rgba(236,72,153,0.9);
-  }
-  33% {
-    box-shadow:
-      0 0 0 5px rgba(236,72,153,1),
-      0 0 26px 10px rgba(236,72,153,0.9),
-      0 0 55px 18px rgba(219,39,119,0.6);
-    border-color: rgba(236,72,153,1);
-  }
-  66% {
-    box-shadow:
-      0 0 0 2px rgba(236,72,153,0.6),
-      0 0 10px 3px rgba(236,72,153,0.4),
-      0 0 18px 6px rgba(219,39,119,0.2);
-    border-color: rgba(236,72,153,0.6);
-  }
-}
+/* ── Purchased border glow classes ──────────────────────────────────────── */
 
 @layer base {
   * {
@@ -249,7 +227,30 @@
   .animate-heartbeat {
     animation: heartbeat 1.5s ease-in-out infinite;
   }
-  .animate-super-owner-border {
-    animation: super-owner-border 0.8s ease-in-out infinite;
+  /* Static pink glow for RM role (no animation) */
+  .border-pink-border {
+    border-color: rgba(236,72,153,0.75);
+    box-shadow: 0 0 16px rgba(236,72,153,0.4), 0 0 32px rgba(219,39,119,0.2);
+  }
+  /* Purchased border glows */
+  .border-crimson-glow {
+    border-color: rgba(239,68,68,0.8);
+    box-shadow: 0 0 16px rgba(239,68,68,0.45);
+  }
+  .border-sapphire-glow {
+    border-color: rgba(96,165,250,0.8);
+    box-shadow: 0 0 16px rgba(96,165,250,0.45);
+  }
+  .border-emerald-glow {
+    border-color: rgba(52,211,153,0.8);
+    box-shadow: 0 0 16px rgba(52,211,153,0.45);
+  }
+  .border-violet-glow {
+    border-color: rgba(167,139,250,0.8);
+    box-shadow: 0 0 16px rgba(167,139,250,0.45);
+  }
+  .border-orange-glow {
+    border-color: rgba(251,146,60,0.8);
+    box-shadow: 0 0 16px rgba(251,146,60,0.45);
   }
 }

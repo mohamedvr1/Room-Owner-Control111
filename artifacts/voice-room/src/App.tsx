@@ -6,6 +6,7 @@ import { SocketProvider } from "@/context/SocketContext";
 import NotFound from "@/pages/not-found";
 import JoinPage from "@/pages/JoinPage";
 import RoomPage from "@/pages/RoomPage";
+import StorePage from "@/pages/StorePage";
 
 const queryClient = new QueryClient();
 
@@ -14,6 +15,7 @@ function Router() {
     <Switch>
       <Route path="/" component={JoinPage} />
       <Route path="/room" component={RoomPage} />
+      <Route path="/store" component={StorePage} />
       <Route component={NotFound} />
     </Switch>
   );

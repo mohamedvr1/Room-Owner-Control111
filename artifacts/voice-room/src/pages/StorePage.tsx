@@ -1,9 +1,15 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { Ghost, ShoppingBag, Lock, Unlock, Check, ArrowLeft, Smartphone } from "lucide-react";
+import {
+  Ghost, ShoppingBag, Lock, Unlock, Check,
+  ArrowLeft, Smartphone, Loader2, ExternalLink,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { BORDERS, getUnlockedBorders, unlockBorder, getSelectedBorder, setSelectedBorder } from "@/lib/borders";
+import {
+  BORDERS, getUnlockedBorders, unlockBorder,
+  getSelectedBorder, setSelectedBorder,
+} from "@/lib/borders";
 import { useToast } from "@/hooks/use-toast";
 
 export default function StorePage() {
@@ -11,19 +17,32 @@ export default function StorePage() {
   const { toast } = useToast();
   const [unlocked, setUnlocked] = useState<string[]>([]);
   const [selected, setSelected] = useState("default");
-  const [buying, setBuying] = useState<string | null>(null);
+  const [manualBuying, setManualBuying] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
-  const [vodafoneNumber, setVodafoneNumber] = useState("01XXXXXXXXX");
+  const [paying, setPaying] = useState<string | null>(null);
+  const [vodafoneNumber, setVodafoneNumber] = useState("01026703525");
+  const [paymobReady, setPaymobReady] = useState<boolean | null>(null);
 
   useEffect(() => {
     setUnlocked(getUnlockedBorders());
     setSelected(getSelectedBorder());
-    // Fetch Vodafone number from server
+
     fetch(`${import.meta.env.BASE_URL}api/borders/info`)
       .then(r => r.json())
-      .then(d => { if (d.vodafoneNumber) setVodafoneNumber(d.vodafoneNumber); })
+      .then((d: { vodafoneNumber?: string }) => {
+        if (d.vodafoneNumber) setVodafoneNumber(d.vodafoneNumber);
+      })
       .catch(() => {});
+
+    // Check if PayMob is configured (server returns 503 if not)
+    fetch(`${import.meta.env.BASE_URL}api/payment/initiate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ borderType: "__check__" }),
+    })
+      .then(r => setPaymobReady(r.status !== 503))
+      .catch(() => setPaymobReady(false));
   }, []);
 
   const handleSelect = (borderId: string) => {
@@ -33,29 +52,55 @@ export default function StorePage() {
     toast({ title: "تم اختيار الإطار ✓" });
   };
 
-  const handleVerify = async () => {
-    if (!buying || !code.trim()) return;
+  // ── Automatic PayMob payment ──────────────────────────────────────────────
+  const handlePaymobPay = async (borderType: string) => {
+    setPaying(borderType);
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}api/payment/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ borderType }),
+      });
+      const data = await res.json() as { iframeUrl?: string; error?: string };
+
+      if (!res.ok || !data.iframeUrl) {
+        toast({ title: data.error || "فشل إنشاء طلب الدفع", variant: "destructive" });
+        setPaying(null);
+        return;
+      }
+
+      // Redirect to PayMob checkout page
+      window.location.href = data.iframeUrl;
+    } catch {
+      toast({ title: "خطأ في الاتصال بالسيرفر", variant: "destructive" });
+      setPaying(null);
+    }
+  };
+
+  // ── Manual code verification (fallback) ──────────────────────────────────
+  const handleVerifyCode = async () => {
+    if (!manualBuying || !code.trim()) return;
     setVerifying(true);
     try {
       const res = await fetch(`${import.meta.env.BASE_URL}api/borders/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim(), borderType: buying }),
+        body: JSON.stringify({ code: code.trim(), borderType: manualBuying }),
       });
       const data = await res.json() as { valid: boolean; message: string };
       if (data.valid) {
-        unlockBorder(buying);
+        unlockBorder(manualBuying);
         setUnlocked(getUnlockedBorders());
-        setSelectedBorder(buying);
-        setSelected(buying);
-        setBuying(null);
+        setSelectedBorder(manualBuying);
+        setSelected(manualBuying);
+        setManualBuying(null);
         setCode("");
-        toast({ title: "🎉 " + data.message, description: "تم فتح الإطار الجديد!" });
+        toast({ title: "🎉 " + data.message });
       } else {
         toast({ title: data.message, variant: "destructive" });
       }
     } catch {
-      toast({ title: "خطأ في الاتصال بالسيرفر", variant: "destructive" });
+      toast({ title: "خطأ في الاتصال", variant: "destructive" });
     } finally {
       setVerifying(false);
     }
@@ -67,7 +112,7 @@ export default function StorePage() {
 
       <div className="relative z-10 max-w-2xl mx-auto p-4">
         {/* Header */}
-        <div className="flex items-center gap-3 pt-6 pb-8">
+        <div className="flex items-center gap-3 pt-6 pb-6">
           <Button variant="ghost" size="sm" onClick={() => setLocation("/")} className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="w-4 h-4 mr-1" /> رجوع
           </Button>
@@ -77,36 +122,50 @@ export default function StorePage() {
           </div>
         </div>
 
-        {/* Payment info banner */}
-        <div className="mb-6 p-4 rounded-lg border border-green-500/30 bg-green-950/20 flex gap-3 items-start">
-          <Smartphone className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
+        {/* Payment method banner */}
+        <div className={`mb-5 p-4 rounded-lg border flex gap-3 items-start
+          ${paymobReady ? "border-green-500/30 bg-green-950/20" : "border-yellow-500/30 bg-yellow-950/20"}`}>
+          <Smartphone className={`w-5 h-5 mt-0.5 shrink-0 ${paymobReady ? "text-green-400" : "text-yellow-400"}`} />
           <div>
-            <p className="text-sm font-bold text-green-300 font-mono">الدفع بفودافون كاش</p>
-            <p className="text-xs text-green-400/80 mt-1 leading-relaxed">
-              ابعت <span className="font-bold text-green-300">20 جنيه</span> على الرقم{" "}
-              <span className="font-bold text-green-300 font-mono">{vodafoneNumber}</span>
-              {" "}واكتب في الرسالة اسم الإطار اللي عايزه، هتاخد كود فتح في خلال دقائق.
-            </p>
+            {paymobReady ? (
+              <>
+                <p className="text-sm font-bold text-green-300 font-mono">دفع تلقائي ✓</p>
+                <p className="text-xs text-green-400/80 mt-1">
+                  بيدفع بفودافون كاش على الرقم <span className="font-bold text-green-300 font-mono">{vodafoneNumber}</span> عبر بوابة الدفع الآمنة.
+                  الإطار بيتفتح تلقائياً بعد الدفع فوراً.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-bold text-yellow-300 font-mono">فودافون كاش — كود يدوي</p>
+                <p className="text-xs text-yellow-400/80 mt-1">
+                  ابعت 20 جنيه على <span className="font-bold text-yellow-300 font-mono">{vodafoneNumber}</span>،
+                  اكتب في الرسالة اسم الإطار. هتاخد كود الفتح في رسالة.
+                </p>
+              </>
+            )}
           </div>
         </div>
 
         {/* Borders grid */}
-        <div className="grid grid-cols-2 gap-3 mb-8">
+        <div className="grid grid-cols-2 gap-3 mb-6">
           {BORDERS.map(border => {
             const isUnlocked = unlocked.includes(border.id);
             const isSelected = selected === border.id;
+            const isLoadingThis = paying === border.id;
 
             return (
               <div
                 key={border.id}
-                className={`relative rounded-lg border p-4 transition-all cursor-pointer
+                className={`relative rounded-lg border p-4 transition-all
                   ${border.cardClass}
                   ${isSelected ? "ring-2 ring-primary/60 scale-[1.02]" : ""}
-                  ${!isUnlocked ? "opacity-60" : "hover:scale-[1.02]"}
+                  ${isUnlocked ? "cursor-pointer hover:scale-[1.02]" : ""}
+                  ${!isUnlocked ? "opacity-70" : ""}
                 `}
-                onClick={() => isUnlocked ? handleSelect(border.id) : setBuying(border.id)}
+                onClick={() => isUnlocked ? handleSelect(border.id) : undefined}
               >
-                {/* Lock/check badge */}
+                {/* Badge */}
                 <div className="absolute top-2 right-2">
                   {isSelected ? (
                     <div className="w-5 h-5 bg-primary rounded-full flex items-center justify-center">
@@ -119,7 +178,7 @@ export default function StorePage() {
                   )}
                 </div>
 
-                {/* Preview avatar */}
+                {/* Preview */}
                 <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center mb-3 ${border.avatarClass}`}>
                   <Ghost className="w-5 h-5" />
                 </div>
@@ -129,58 +188,82 @@ export default function StorePage() {
                   {border.price === 0 ? "مجاني" : `${border.price} جنيه`}
                 </p>
 
-                {!isUnlocked && (
-                  <Button size="sm" variant="outline"
-                    className="w-full mt-3 h-7 text-xs border-border/50"
-                    onClick={e => { e.stopPropagation(); setBuying(border.id); }}>
-                    شراء
-                  </Button>
+                {!isUnlocked && border.price > 0 && (
+                  <div className="flex gap-1.5 mt-3">
+                    {/* Auto payment button */}
+                    <Button
+                      size="sm"
+                      className="flex-1 h-7 text-xs gap-1"
+                      disabled={isLoadingThis}
+                      onClick={e => { e.stopPropagation(); handlePaymobPay(border.id); }}
+                    >
+                      {isLoadingThis
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <ExternalLink className="w-3 h-3" />}
+                      {isLoadingThis ? "..." : "ادفع الآن"}
+                    </Button>
+
+                    {/* Manual code button (fallback) */}
+                    {!paymobReady && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs border-border/50 px-2"
+                        onClick={e => { e.stopPropagation(); setManualBuying(border.id); }}
+                      >
+                        كود
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {isUnlocked && !isSelected && (
+                  <p className="text-xs text-muted-foreground mt-2 text-center opacity-60">
+                    اضغط للاختيار
+                  </p>
                 )}
               </div>
             );
           })}
         </div>
 
-        {/* Active selection indicator */}
-        <p className="text-center text-xs text-muted-foreground font-mono mb-8">
-          الإطار المختار حالياً: <span className="text-foreground">{BORDERS.find(b => b.id === selected)?.name}</span>
+        <p className="text-center text-xs text-muted-foreground font-mono">
+          الإطار المختار: <span className="text-foreground">{BORDERS.find(b => b.id === selected)?.name}</span>
         </p>
       </div>
 
-      {/* Code entry modal */}
-      {buying && (
+      {/* Manual code modal (fallback when PayMob not configured) */}
+      {manualBuying && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
             <div className="text-center">
               <Ghost className="w-8 h-8 text-primary mx-auto mb-2" />
               <h2 className="font-mono font-bold text-foreground">
-                {BORDERS.find(b => b.id === buying)?.name}
+                {BORDERS.find(b => b.id === manualBuying)?.name}
               </h2>
               <p className="text-sm text-muted-foreground mt-1">السعر: 20 جنيه</p>
             </div>
 
-            <div className="p-3 rounded-lg border border-green-500/30 bg-green-950/20 text-xs text-green-400/80 space-y-1">
-              <p className="font-bold text-green-300">خطوات الدفع:</p>
-              <p>١. ابعت 20 جنيه على: <span className="font-mono text-green-300">{vodafoneNumber}</span></p>
-              <p>٢. اكتب في الرسالة: <span className="font-mono text-green-300">{buying}</span></p>
-              <p>٣. هتاخد كود الفتح في الرسائل</p>
+            <div className="p-3 rounded-lg border border-yellow-500/30 bg-yellow-950/20 text-xs text-yellow-400/80 space-y-1">
+              <p className="font-bold text-yellow-300">خطوات الدفع:</p>
+              <p>١. ابعت 20 جنيه على: <span className="font-mono text-yellow-300">{vodafoneNumber}</span></p>
+              <p>٢. اكتب في الرسالة: <span className="font-mono text-yellow-300">{manualBuying}</span></p>
+              <p>٣. هتاخد كود الفتح في الرسالة</p>
             </div>
 
-            <div className="space-y-2">
-              <Input
-                placeholder="أدخل كود الفتح"
-                value={code}
-                onChange={e => setCode(e.target.value)}
-                className="bg-background border-border/50 text-center font-mono tracking-widest uppercase"
-                onKeyDown={e => { if (e.key === "Enter") handleVerify(); }}
-              />
-            </div>
+            <Input
+              placeholder="أدخل كود الفتح"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              className="bg-background border-border/50 text-center font-mono tracking-widest uppercase"
+              onKeyDown={e => { if (e.key === "Enter") handleVerifyCode(); }}
+            />
 
             <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => { setBuying(null); setCode(""); }}>
+              <Button variant="outline" className="flex-1" onClick={() => { setManualBuying(null); setCode(""); }}>
                 إلغاء
               </Button>
-              <Button className="flex-1" disabled={!code.trim() || verifying} onClick={handleVerify}>
+              <Button className="flex-1" disabled={!code.trim() || verifying} onClick={handleVerifyCode}>
                 {verifying ? "جاري التحقق..." : "تفعيل"}
               </Button>
             </div>

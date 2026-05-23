@@ -1,14 +1,23 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
 import { Participant } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
+export type SocketParticipant = Participant & { isSuperOwner?: boolean };
+
+interface JoinData {
+  name: string;
+  isOwner: boolean;
+  ownerSecret?: string;
+}
+
 interface SocketContextState {
   socket: Socket | null;
-  participants: Participant[];
+  participants: SocketParticipant[];
   participantId: string | null;
   isOwner: boolean;
+  isSuperOwner: boolean;
   isConnected: boolean;
   joinRoom: (name: string, isOwner: boolean, ownerSecret?: string) => void;
   leaveRoom: () => void;
@@ -28,50 +37,79 @@ const SocketContext = createContext<SocketContextState | null>(null);
 
 export function SocketProvider({ children }: { children: ReactNode }) {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [participants, setParticipants] = useState<SocketParticipant[]>([]);
   const [participantId, setParticipantId] = useState<string | null>(null);
   const [isOwner, setIsOwner] = useState(false);
+  const [isSuperOwner, setIsSuperOwner] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  
   const [scareTriggered, setScareTriggered] = useState(false);
   const [flashlightOn, setFlashlightOn] = useState(false);
   const [isForceMuted, setIsForceMuted] = useState(false);
-  
+
+  // Stored join data so we can auto-rejoin after reconnect
+  const joinDataRef = useRef<JoinData | null>(null);
+  // Track if we need to stay on room page (don't redirect on rejoin)
+  const inRoomRef = useRef(false);
+
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    const newSocket = io({ path: "/api/socket.io", autoConnect: false });
+    const newSocket = io({
+      path: "/api/socket.io",
+      autoConnect: false,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+    });
     setSocket(newSocket);
 
-    newSocket.on("connect", () => setIsConnected(true));
-    // On unexpected disconnect: mark offline but DON'T clear room state or redirect.
-    // Socket.IO will auto-reconnect; on reconnect we stay on the room page.
-    newSocket.on("disconnect", () => {
-      setIsConnected(false);
+    newSocket.on("connect", () => {
+      setIsConnected(true);
+      // Auto-rejoin if we were in a room before an unexpected disconnect
+      if (joinDataRef.current && inRoomRef.current) {
+        newSocket.emit("join", joinDataRef.current);
+      }
     });
 
-    newSocket.on("joined", (data: { participantId: string, isOwner: boolean, participants: Participant[] }) => {
+    // On unexpected disconnect: don't clear state or redirect — Socket.IO reconnects automatically
+    newSocket.on("disconnect", (reason) => {
+      setIsConnected(false);
+      // Only clear room state on deliberate disconnect (transport close by us)
+      if (reason === "io client disconnect") {
+        inRoomRef.current = false;
+      }
+    });
+
+    newSocket.on("joined", (data: {
+      participantId: string;
+      isOwner: boolean;
+      isSuperOwner: boolean;
+      participants: SocketParticipant[];
+    }) => {
       setParticipantId(data.participantId);
       setIsOwner(data.isOwner);
+      setIsSuperOwner(data.isSuperOwner ?? false);
       setParticipants(data.participants);
+      inRoomRef.current = true;
       setLocation("/room");
     });
 
-    newSocket.on("participant-joined", (p: Participant) => {
+    newSocket.on("participant-joined", (p: SocketParticipant) => {
       setParticipants(prev => [...prev.filter(x => x.id !== p.id), p]);
     });
 
-    newSocket.on("participant-left", ({ participantId }: { participantId: string }) => {
-      setParticipants(prev => prev.filter(x => x.id !== participantId));
+    newSocket.on("participant-left", ({ participantId: pid }: { participantId: string }) => {
+      setParticipants(prev => prev.filter(x => x.id !== pid));
     });
 
-    newSocket.on("participant-muted", ({ participantId, isMuted }: { participantId: string, isMuted: boolean }) => {
-      setParticipants(prev => prev.map(p => p.id === participantId ? { ...p, isMuted } : p));
+    newSocket.on("participant-muted", ({ participantId: pid, isMuted }: { participantId: string; isMuted: boolean }) => {
+      setParticipants(prev => prev.map(p => p.id === pid ? { ...p, isMuted } : p));
     });
 
-    newSocket.on("participant-speaking", ({ participantId, isSpeaking }: { participantId: string, isSpeaking: boolean }) => {
-      setParticipants(prev => prev.map(p => p.id === participantId ? { ...p, isSpeaking } : p));
+    newSocket.on("participant-speaking", ({ participantId: pid, isSpeaking }: { participantId: string; isSpeaking: boolean }) => {
+      setParticipants(prev => prev.map(p => p.id === pid ? { ...p, isSpeaking } : p));
     });
 
     newSocket.on("force-mute", ({ muted }: { muted: boolean }) => {
@@ -87,49 +125,49 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setTimeout(() => setScareTriggered(false), 4000);
     });
 
-    newSocket.on("flashlight", ({ on }: { on: boolean }) => {
-      setFlashlightOn(on);
-    });
+    newSocket.on("flashlight", ({ on }: { on: boolean }) => setFlashlightOn(on));
 
     newSocket.on("kicked", () => {
-      toast({
-        title: "You have been kicked from the room.",
-        variant: "destructive"
-      });
+      joinDataRef.current = null;
+      inRoomRef.current = false;
+      toast({ title: "تم طردك من الروم.", variant: "destructive" });
       newSocket.disconnect();
+      setParticipantId(null);
+      setParticipants([]);
+      setIsOwner(false);
+      setIsSuperOwner(false);
       setLocation("/");
+      setTimeout(() => newSocket.connect(), 100);
     });
-    
+
     newSocket.on("error", (err: { message: string }) => {
-      toast({
-        title: "Error",
-        description: err.message || "Something went wrong",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: err.message || "Something went wrong", variant: "destructive" });
     });
 
     newSocket.connect();
-
-    return () => {
-      newSocket.disconnect();
-    };
+    return () => { newSocket.disconnect(); };
   }, [setLocation, toast]);
 
   const joinRoom = (name: string, isOwnerReq: boolean, ownerSecret?: string) => {
     if (socket) {
-      socket.emit("join", { name, isOwner: isOwnerReq, ownerSecret });
+      const data: JoinData = { name, isOwner: isOwnerReq, ownerSecret };
+      joinDataRef.current = data;
+      socket.emit("join", data);
     }
   };
 
   const leaveRoom = () => {
     if (socket) {
+      joinDataRef.current = null;
+      inRoomRef.current = false;
       socket.emit("leave");
       socket.disconnect();
       setParticipantId(null);
       setParticipants([]);
       setIsOwner(false);
+      setIsSuperOwner(false);
       setLocation("/");
-      socket.connect(); // reconnect for next time
+      setTimeout(() => socket.connect(), 100);
     }
   };
 
@@ -143,10 +181,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   return (
     <SocketContext.Provider value={{
-      socket, participants, participantId, isOwner, isConnected,
+      socket, participants, participantId, isOwner, isSuperOwner, isConnected,
       joinRoom, leaveRoom, setSelfMuted, setSpeaking,
       ownerMute, ownerScare, ownerFlashlight, ownerKick,
-      scareTriggered, flashlightOn, isForceMuted, clearScare
+      scareTriggered, flashlightOn, isForceMuted, clearScare,
     }}>
       {children}
     </SocketContext.Provider>

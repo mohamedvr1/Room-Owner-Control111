@@ -1,15 +1,15 @@
 import { useState } from "react";
-import { Participant } from "@workspace/api-client-react";
-import { useSocket } from "@/context/SocketContext";
-import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert, X } from "lucide-react";
+import { useSocket, SocketParticipant } from "@/context/SocketContext";
+import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert, Crown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export function ParticipantCard({ participant }: { participant: Participant }) {
+export function ParticipantCard({ participant }: { participant: SocketParticipant }) {
   const { isOwner, participantId, ownerMute, ownerScare, ownerFlashlight, ownerKick } = useSocket();
   const isSelf = participant.id === participantId;
   const [selected, setSelected] = useState(false);
 
-  const isOwnerCard = participant.isOwner;
+  const isSuperOwnerCard = !!participant.isSuperOwner;
+  const isOwnerCard = participant.isOwner && !isSuperOwnerCard;
 
   const handleClick = () => {
     if (isOwner && !isSelf) setSelected(prev => !prev);
@@ -19,18 +19,23 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
     <div
       onClick={handleClick}
       className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-300
-        ${isOwnerCard
-          ? "animate-owner-border bg-gradient-to-b from-amber-950/40 to-card/60"
-          : participant.isSpeaking
-            ? "border-primary shadow-[0_0_15px_rgba(220,38,38,0.45)] animate-pulse-glow bg-card/80"
-            : "border-border bg-card/40"
+        ${isSuperOwnerCard
+          ? "animate-super-owner-border bg-gradient-to-b from-pink-950/40 to-card/60"
+          : isOwnerCard
+            ? "border-amber-500/70 shadow-[0_0_18px_rgba(245,158,11,0.35)] bg-gradient-to-b from-amber-950/40 to-card/60"
+            : participant.isSpeaking
+              ? "border-primary shadow-[0_0_15px_rgba(220,38,38,0.45)] animate-pulse-glow bg-card/80"
+              : "border-border bg-card/40"
         }
-        ${isOwner && !isSelf ? "cursor-pointer hover:border-primary/60 hover:scale-[1.02]" : ""}
+        ${isOwner && !isSelf ? "cursor-pointer hover:scale-[1.02]" : ""}
         ${selected ? "ring-2 ring-primary/60 scale-[1.02]" : ""}
       `}
       data-testid={`card-participant-${participant.id}`}
     >
-      {/* Owner crown strip */}
+      {/* Top strip */}
+      {isSuperOwnerCard && (
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-pink-400 to-transparent" />
+      )}
       {isOwnerCard && (
         <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
       )}
@@ -40,11 +45,13 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
           {/* Avatar */}
           <div className="relative">
             <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 transition-all duration-300
-              ${isOwnerCard
-                ? "border-amber-400 bg-amber-950/60 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
-                : participant.isSpeaking
-                  ? "border-primary text-primary animate-heartbeat"
-                  : "border-muted text-muted-foreground bg-background"
+              ${isSuperOwnerCard
+                ? "border-pink-400 bg-pink-950/60 text-pink-300 shadow-[0_0_10px_rgba(236,72,153,0.5)]"
+                : isOwnerCard
+                  ? "border-amber-400 bg-amber-950/60 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
+                  : participant.isSpeaking
+                    ? "border-primary text-primary animate-heartbeat"
+                    : "border-muted text-muted-foreground bg-background"
               }
             `}>
               <Ghost className="w-6 h-6" />
@@ -63,11 +70,16 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
           {/* Name */}
           <div className="flex-1 min-w-0">
             <p className={`font-bold text-sm truncate flex items-center gap-1.5
-              ${isOwnerCard ? "text-amber-300" : "text-foreground"}
+              ${isSuperOwnerCard ? "text-pink-300" : isOwnerCard ? "text-amber-300" : "text-foreground"}
             `}>
               {participant.name}
               {isSelf && <span className="text-xs font-normal text-muted-foreground">(You)</span>}
             </p>
+            {isSuperOwnerCard && (
+              <p className="text-[10px] text-pink-400/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
+                <Crown className="w-3 h-3" /> Super Owner
+              </p>
+            )}
             {isOwnerCard && (
               <p className="text-[10px] text-amber-500/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
                 <ShieldAlert className="w-3 h-3" /> Owner
@@ -87,7 +99,7 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
           )}
         </div>
 
-        {/* Owner controls — shown only when card is selected */}
+        {/* Owner controls — shown when card is selected */}
         {isOwner && !isSelf && selected && (
           <div
             onClick={e => e.stopPropagation()}
@@ -150,7 +162,6 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
           </div>
         )}
 
-        {/* Hint for owner on non-self cards */}
         {isOwner && !isSelf && !selected && (
           <p className="text-[10px] text-muted-foreground/40 font-mono text-center">tap to control</p>
         )}

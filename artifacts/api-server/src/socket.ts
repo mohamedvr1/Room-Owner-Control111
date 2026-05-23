@@ -6,13 +6,26 @@ interface Participant {
   name: string;
   isMuted: boolean;
   isOwner: boolean;
+  isSuperOwner: boolean;
   isSpeaking: boolean;
   socketId: string;
 }
 
 const participants = new Map<string, Participant>();
-const OWNER_SECRET = process.env.OWNER_SECRET || "1471471";
+const OWNER_SECRET = process.env.OWNER_SECRET || "147147";
+const SUPER_SECRET = process.env.SUPER_SECRET || "1471471";
 const ROOM = "main";
+
+function sanitize(p: Participant) {
+  return {
+    id: p.id,
+    name: p.name,
+    isMuted: p.isMuted,
+    isOwner: p.isOwner,
+    isSuperOwner: p.isSuperOwner,
+    isSpeaking: p.isSpeaking,
+  };
+}
 
 export function setupSocketIO(io: SocketIOServer) {
   io.on("connection", (socket: Socket) => {
@@ -21,14 +34,15 @@ export function setupSocketIO(io: SocketIOServer) {
     socket.on(
       "join",
       (data: { name: string; isOwner?: boolean; ownerSecret?: string }) => {
-        const isOwner =
-          data.isOwner === true && data.ownerSecret === OWNER_SECRET;
+        const isSuperOwner = data.ownerSecret === SUPER_SECRET;
+        const isOwner = isSuperOwner || data.ownerSecret === OWNER_SECRET;
 
         const participant: Participant = {
           id: socket.id,
           name: data.name || "Anonymous",
           isMuted: false,
           isOwner,
+          isSuperOwner,
           isSpeaking: false,
           socketId: socket.id,
         };
@@ -39,20 +53,20 @@ export function setupSocketIO(io: SocketIOServer) {
         socket.emit("joined", {
           participantId: socket.id,
           isOwner,
+          isSuperOwner,
           participants: Array.from(participants.values()).map(sanitize),
         });
 
         socket.broadcast.emit("participant-joined", sanitize(participant));
 
         logger.info(
-          { name: participant.name, isOwner },
+          { name: participant.name, isOwner, isSuperOwner },
           "Participant joined room",
         );
       },
     );
 
     // ── Audio relay ────────────────────────────────────────────────────────
-    // data is a binary Buffer; we tag it with the sender's id and broadcast
     socket.on("audio-chunk", (data: Buffer) => {
       socket.to(ROOM).emit("audio-chunk", { fromId: socket.id, data });
     });
@@ -77,7 +91,6 @@ export function setupSocketIO(io: SocketIOServer) {
       target.isMuted = d.muted;
       io.to(d.targetId).emit("force-mute", { muted: d.muted });
       io.emit("participant-muted", { participantId: d.targetId, isMuted: d.muted });
-      logger.info({ targetId: d.targetId, muted: d.muted }, "Owner muted participant");
     });
 
     // ── Owner: scare ───────────────────────────────────────────────────────
@@ -85,7 +98,6 @@ export function setupSocketIO(io: SocketIOServer) {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
       io.to(d.targetId).emit("scare", {});
-      logger.info({ targetId: d.targetId }, "Owner triggered scare");
     });
 
     // ── Owner: flashlight ──────────────────────────────────────────────────
@@ -93,7 +105,6 @@ export function setupSocketIO(io: SocketIOServer) {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
       io.to(d.targetId).emit("flashlight", { on: d.on });
-      logger.info({ targetId: d.targetId, on: d.on }, "Owner toggled flashlight");
     });
 
     // ── Owner: kick ────────────────────────────────────────────────────────
@@ -101,7 +112,6 @@ export function setupSocketIO(io: SocketIOServer) {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
       io.to(d.targetId).emit("kicked", {});
-      logger.info({ targetId: d.targetId }, "Owner kicked participant");
     });
 
     // ── Self-mute ──────────────────────────────────────────────────────────
@@ -122,14 +132,4 @@ export function setupSocketIO(io: SocketIOServer) {
       }
     });
   });
-}
-
-function sanitize(p: Participant) {
-  return {
-    id: p.id,
-    name: p.name,
-    isMuted: p.isMuted,
-    isOwner: p.isOwner,
-    isSpeaking: p.isSpeaking,
-  };
 }

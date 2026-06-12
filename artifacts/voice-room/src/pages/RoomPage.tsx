@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useSocket } from "@/context/SocketContext";
-import { useAudioRelay } from "@/hooks/useAudioRelay";
+import { useWebRTC } from "@/hooks/useWebRTC";
 import { useSpeakingDetection } from "@/hooks/useSpeakingDetection";
 import { ParticipantCard } from "@/components/ParticipantCard";
 import { ScaryOverlay } from "@/components/ScaryOverlay";
@@ -14,7 +14,6 @@ export default function RoomPage() {
     participants,
     participantId,
     isConnected,
-    isOwner,
     setSelfMuted,
     leaveRoom,
     flashlightOn,
@@ -24,33 +23,54 @@ export default function RoomPage() {
   const { toast } = useToast();
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [audioCtx, setAudioCtx] = useState<AudioContext | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOff, setIsSpeakerOff] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const flashlightStreamRef = useRef<MediaStream | null>(null);
 
   const effectiveMuted = isMuted || isForceMuted;
-  const [confirmLeave, setConfirmLeave] = useState(false);
 
-  // Audio relay via server (guaranteed to work on any network)
-  useAudioRelay(localStream, effectiveMuted, isSpeakerOff);
+  // WebRTC mesh — P2P audio, Opus codec, automatic echo cancellation
+  useWebRTC(localStream, audioCtx, isSpeakerOff);
   useSpeakingDetection(localStream, effectiveMuted);
 
-  // Only redirect if we never joined (no participantId) — not on temporary disconnect
+  // Redirect if not in room
   useEffect(() => {
     if (!participantId) setLocation("/");
   }, [participantId, setLocation]);
 
-  // Request mic
+  // Create shared AudioContext for playback (created on mount, resumed after tap)
+  useEffect(() => {
+    // 48 kHz matches Opus native sample rate — avoids resampling artifacts
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
+    setAudioCtx(ctx);
+
+    const resume = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
+    document.addEventListener("click", resume, { once: true });
+    document.addEventListener("touchend", resume, { once: true });
+    // Try immediate resume
+    ctx.resume().catch(() => {});
+
+    return () => {
+      ctx.close().catch(() => {});
+    };
+  }, []);
+
+  // Request microphone — let browser apply echo cancel, noise suppress, AGC
   useEffect(() => {
     let stream: MediaStream;
     async function getMic() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            // Browser WebRTC stack handles all audio processing natively
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
-            sampleRate: 16000,
+            // 48 kHz: Opus native rate, best speech quality
+            sampleRate: 48000,
+            channelCount: 1,        // mono — halves bandwidth, better for voice
           },
           video: false,
         });
@@ -67,14 +87,14 @@ export default function RoomPage() {
     return () => { stream?.getTracks().forEach((t) => t.stop()); };
   }, [toast]);
 
-  // Sync mute state with stream tracks + server
+  // Sync track enabled state + server mute flag
   useEffect(() => {
     if (!localStream) return;
     localStream.getAudioTracks().forEach((t) => { t.enabled = !effectiveMuted; });
     setSelfMuted(effectiveMuted);
   }, [effectiveMuted, localStream, setSelfMuted]);
 
-  // Flashlight
+  // Flashlight (owner command)
   useEffect(() => {
     if (flashlightOn) {
       navigator.mediaDevices
@@ -100,16 +120,23 @@ export default function RoomPage() {
       <ScaryOverlay />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-primary/5 via-background to-background pointer-events-none" />
 
+      {/* Header */}
       <header className="relative z-10 flex items-center justify-between p-4 border-b border-border/50 bg-background/80 backdrop-blur-md">
         <div className="flex items-center gap-2 text-primary">
           <Ghost className="w-6 h-6" />
           <h1 className="font-mono font-bold text-xl tracking-wider">GhostRoom</h1>
         </div>
-        <div className="text-sm text-muted-foreground font-mono">
-          {participants.length} Soul{participants.length !== 1 ? "s" : ""} Online
+        <div className="flex items-center gap-3">
+          {!isConnected && (
+            <span className="text-xs text-destructive font-mono animate-pulse">reconnecting…</span>
+          )}
+          <span className="text-sm text-muted-foreground font-mono">
+            {participants.length} Soul{participants.length !== 1 ? "s" : ""} Online
+          </span>
         </div>
       </header>
 
+      {/* Participants grid */}
       <main className="flex-1 relative z-10 p-4 overflow-y-auto">
         <div className="max-w-4xl mx-auto">
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -120,10 +147,11 @@ export default function RoomPage() {
         </div>
       </main>
 
+      {/* Controls footer */}
       <footer className="relative z-10 p-4 border-t border-border/50 bg-background/80 backdrop-blur-md">
         <div className="max-w-4xl mx-auto flex items-center justify-center gap-4">
 
-          {/* Speaker */}
+          {/* Speaker toggle */}
           <Button
             variant="outline"
             size="lg"
@@ -135,7 +163,7 @@ export default function RoomPage() {
             {isSpeakerOff ? <VolumeX className="w-7 h-7" /> : <Volume2 className="w-7 h-7" />}
           </Button>
 
-          {/* Mic */}
+          {/* Mic toggle */}
           <Button
             variant={effectiveMuted ? "destructive" : "default"}
             size="lg"
@@ -166,7 +194,7 @@ export default function RoomPage() {
         )}
       </footer>
 
-      {/* Leave confirmation dialog */}
+      {/* Leave confirmation */}
       {confirmLeave && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="bg-card border border-border rounded-lg p-6 max-w-xs w-full mx-4 text-center space-y-4 shadow-2xl">

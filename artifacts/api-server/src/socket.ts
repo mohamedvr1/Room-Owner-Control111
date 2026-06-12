@@ -33,6 +33,7 @@ export function setupSocketIO(io: SocketIOServer) {
   io.on("connection", (socket: Socket) => {
     logger.info({ socketId: socket.id }, "Client connected");
 
+    // ── Join room ──────────────────────────────────────────────────────────
     socket.on(
       "join",
       (data: {
@@ -58,6 +59,7 @@ export function setupSocketIO(io: SocketIOServer) {
         participants.set(socket.id, participant);
         socket.join(ROOM);
 
+        // Send joined confirmation with current participant list
         socket.emit("joined", {
           participantId: socket.id,
           isOwner,
@@ -65,15 +67,24 @@ export function setupSocketIO(io: SocketIOServer) {
           participants: Array.from(participants.values()).map(sanitize),
         });
 
+        // Notify everyone else
         socket.broadcast.emit("participant-joined", sanitize(participant));
 
-        logger.info({ name: participant.name, isOwner, isRM }, "Participant joined room");
+        logger.info({ name: participant.name, isOwner, isRM }, "Participant joined");
       },
     );
 
-    // ── PCM audio relay (zero-gap, continuous stream) ──────────────────────
-    socket.on("audio-pcm", (data: Buffer) => {
-      socket.to(ROOM).emit("audio-pcm", { fromId: socket.id, data });
+    // ── WebRTC signalling (server is a pure relay, no audio processing) ───
+    socket.on("rtc-offer", (d: { targetId: string; sdp: unknown }) => {
+      socket.to(d.targetId).emit("rtc-offer", { fromId: socket.id, sdp: d.sdp });
+    });
+
+    socket.on("rtc-answer", (d: { targetId: string; sdp: unknown }) => {
+      socket.to(d.targetId).emit("rtc-answer", { fromId: socket.id, sdp: d.sdp });
+    });
+
+    socket.on("rtc-ice", (d: { targetId: string; candidate: unknown }) => {
+      socket.to(d.targetId).emit("rtc-ice", { fromId: socket.id, candidate: d.candidate });
     });
 
     // ── Speaking indicator ─────────────────────────────────────────────────
@@ -81,13 +92,19 @@ export function setupSocketIO(io: SocketIOServer) {
       const p = participants.get(socket.id);
       if (!p) return;
       p.isSpeaking = d.isSpeaking;
-      io.emit("participant-speaking", { participantId: socket.id, isSpeaking: d.isSpeaking });
+      io.emit("participant-speaking", {
+        participantId: socket.id,
+        isSpeaking: d.isSpeaking,
+      });
     });
 
-    // ── Owner: mute ────────────────────────────────────────────────────────
+    // ── Owner controls ─────────────────────────────────────────────────────
     socket.on("owner-mute", (d: { targetId: string; muted: boolean }) => {
       const sender = participants.get(socket.id);
-      if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
+      if (!sender?.isOwner) {
+        socket.emit("error", { message: "Not authorized" });
+        return;
+      }
       const target = participants.get(d.targetId);
       if (!target) return;
       target.isMuted = d.muted;
@@ -95,21 +112,18 @@ export function setupSocketIO(io: SocketIOServer) {
       io.emit("participant-muted", { participantId: d.targetId, isMuted: d.muted });
     });
 
-    // ── Owner: scare ───────────────────────────────────────────────────────
     socket.on("owner-scare", (d: { targetId: string }) => {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
       io.to(d.targetId).emit("scare", {});
     });
 
-    // ── Owner: flashlight ──────────────────────────────────────────────────
     socket.on("owner-flashlight", (d: { targetId: string; on: boolean }) => {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
       io.to(d.targetId).emit("flashlight", { on: d.on });
     });
 
-    // ── Owner: kick ────────────────────────────────────────────────────────
     socket.on("owner-kick", (d: { targetId: string }) => {
       const sender = participants.get(socket.id);
       if (!sender?.isOwner) { socket.emit("error", { message: "Not authorized" }); return; }
@@ -130,7 +144,7 @@ export function setupSocketIO(io: SocketIOServer) {
       participants.delete(socket.id);
       if (p) {
         io.emit("participant-left", { participantId: socket.id });
-        logger.info({ name: p.name }, "Participant left room");
+        logger.info({ name: p.name }, "Participant left");
       }
     });
   });

@@ -1,145 +1,190 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, ReactNode } from "react";
 import { useSocket } from "@/context/SocketContext";
+import { Ghost, Wifi, WifiOff, ShieldCheck, Crown, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Ghost, ShoppingBag, Check } from "lucide-react";
-import { useLocation } from "wouter";
-import { BORDERS, getUnlockedBorders, getSelectedBorder, setSelectedBorder, getBorderById } from "@/lib/borders";
+
+type Role = "user" | "owner" | "rm";
 
 export default function JoinPage() {
   const { joinRoom, isConnected } = useSocket();
-  const [, setLocation] = useLocation();
-  const [name, setName] = useState("");
-  const [isOwner, setIsOwner] = useState(false);
-  const [ownerSecret, setOwnerSecret] = useState("");
-  const [unlocked, setUnlocked] = useState<string[]>([]);
-  const [selectedBorder, setSelected] = useState("default");
+  const [name, setName]           = useState("");
+  const [role, setRole]           = useState<Role>("user");
+  const [secret, setSecret]       = useState("");
+  const [joining, setJoining]     = useState(false);
+  const [showRoles, setShowRoles] = useState(false);
 
-  useEffect(() => {
-    setUnlocked(getUnlockedBorders());
-    setSelected(getSelectedBorder());
-  }, []);
+  // Auto-clear secret when going back to user
+  useEffect(() => { if (role === "user") setSecret(""); }, [role]);
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    joinRoom(name, isOwner, ownerSecret, selectedBorder);
+    if (!name.trim() || joining) return;
+    setJoining(true);
+    joinRoom(name.trim(), role !== "user" ? secret : undefined);
   };
 
-  const pickBorder = (id: string) => {
-    if (!unlocked.includes(id)) return;
-    setSelectedBorder(id);
-    setSelected(id);
+  const roleLabels: Record<Role, { label: string; icon: ReactNode; desc: string }> = {
+    user:  { label: "Guest",       icon: <Ghost className="w-4 h-4" />,        desc: "Join as a regular participant" },
+    owner: { label: "Owner",       icon: <Crown className="w-4 h-4" />,        desc: "Full room controls (147147)" },
+    rm:    { label: "Room Master", icon: <ShieldCheck className="w-4 h-4" />,  desc: "Room master role (1471471)" },
   };
-
-  const activeBorder = getBorderById(selectedBorder);
 
   return (
-    <div className="min-h-dvh w-full flex items-center justify-center p-4 bg-background relative overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/10 via-background to-background pointer-events-none" />
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSIvPjwvc3ZnPg==')] opacity-20 pointer-events-none" />
+    <div className="min-h-dvh w-full flex items-center justify-center relative overflow-hidden bg-background">
+      {/* Ambient glow orbs */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -left-40 w-[600px] h-[600px] rounded-full
+          bg-primary/8 blur-[100px]" />
+        <div className="absolute -bottom-40 -right-40 w-[500px] h-[500px] rounded-full
+          bg-purple-500/6 blur-[120px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+          w-[300px] h-[300px] rounded-full bg-cyan-500/4 blur-[80px]" />
+      </div>
 
-      <div className="w-full max-w-md bg-card/80 backdrop-blur-xl border border-border rounded-xl p-8 shadow-2xl relative z-10">
-        <div className="text-center mb-8">
-          <div className="mx-auto w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mb-4 shadow-[0_0_15px_rgba(255,0,0,0.3)]">
-            <Ghost className="w-8 h-8 text-primary animate-pulse" />
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground font-mono">GhostRoom</h1>
-          <p className="text-muted-foreground mt-2 text-sm">Enter if you dare.</p>
-        </div>
+      {/* Card */}
+      <div className="relative z-10 w-full max-w-[400px] mx-4">
+        <div className="glass-strong rounded-3xl p-8 shadow-2xl">
 
-        <form onSubmit={handleJoin} className="space-y-5">
-          <div className="space-y-2">
-            <Label htmlFor="name" className="text-foreground/80">Your Name</Label>
-            <Input
-              id="name"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g. Victim #1"
-              required
-              className="bg-background border-border/50 focus:border-primary"
-              data-testid="input-name"
-            />
-          </div>
-
-          {/* Border selector */}
-          {unlocked.length > 1 && (
-            <div className="space-y-2">
-              <Label className="text-foreground/80">إطارك</Label>
-              <div className="flex gap-2 flex-wrap">
-                {BORDERS.filter(b => unlocked.includes(b.id)).map(b => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => pickBorder(b.id)}
-                    className={`relative w-10 h-10 rounded-full border-2 flex items-center justify-center transition-all
-                      ${b.avatarClass}
-                      ${selectedBorder === b.id ? "scale-110 ring-2 ring-primary/60" : "opacity-70 hover:opacity-100 hover:scale-105"}
-                    `}
-                    title={b.name}
-                  >
-                    <Ghost className="w-5 h-5" />
-                    {selectedBorder === b.id && (
-                      <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-primary rounded-full flex items-center justify-center">
-                        <Check className="w-2.5 h-2.5 text-primary-foreground" />
-                      </span>
-                    )}
-                  </button>
-                ))}
+          {/* Logo */}
+          <div className="flex flex-col items-center mb-8">
+            <div className="relative mb-4">
+              <div className="w-20 h-20 rounded-2xl bg-primary/15 flex items-center justify-center
+                ring-1 ring-primary/20 shadow-[0_0_30px_rgba(139,92,246,0.3)] animate-float-ghost">
+                <Ghost className="w-10 h-10 text-primary" />
               </div>
-              <p className="text-xs text-muted-foreground">
-                الإطار المختار: <span className={activeBorder.textClass}>{activeBorder.name}</span>
-              </p>
+              {/* Connection indicator */}
+              <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full border-2 border-background
+                flex items-center justify-center
+                ${isConnected ? "bg-emerald-500" : "bg-destructive animate-pulse"}`}>
+                {isConnected
+                  ? <Wifi className="w-2.5 h-2.5 text-white" />
+                  : <WifiOff className="w-2.5 h-2.5 text-white" />}
+              </div>
             </div>
-          )}
-
-          <div className="flex items-center justify-between p-3 rounded-lg border border-border/50 bg-background/50">
-            <Label htmlFor="isOwner" className="cursor-pointer text-foreground/80">I am the Owner</Label>
-            <Switch
-              id="isOwner"
-              checked={isOwner}
-              onCheckedChange={setIsOwner}
-              data-testid="switch-owner"
-            />
+            <h1 className="font-mono font-black text-3xl tracking-tighter text-foreground">
+              GhostRoom
+            </h1>
+            <p className="text-muted-foreground text-sm mt-1 font-light">
+              Enter the void.
+            </p>
           </div>
 
-          {isOwner && (
-            <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
-              <Label htmlFor="secret" className="text-foreground/80">Owner Secret</Label>
+          <form onSubmit={handleJoin} className="space-y-4">
+            {/* Name input */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Your Name
+              </label>
               <Input
-                id="secret"
-                type="password"
-                value={ownerSecret}
-                onChange={e => setOwnerSecret(e.target.value)}
-                placeholder="Password"
-                required={isOwner}
-                className="bg-background border-border/50 focus:border-accent"
-                data-testid="input-ownersecret"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Victim #1"
+                required
+                maxLength={32}
+                className="h-12 bg-white/[0.04] border-white/10 focus:border-primary/50
+                  focus:ring-0 focus:ring-offset-0 rounded-xl text-base placeholder:text-white/20"
+                data-testid="input-name"
               />
             </div>
-          )}
 
-          <Button
-            type="submit"
-            className="w-full h-12 text-lg font-bold bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_10px_rgba(255,0,0,0.2)] hover:shadow-[0_0_20px_rgba(255,0,0,0.4)] transition-all"
-            disabled={!isConnected || !name.trim()}
-            data-testid="button-join"
-          >
-            {isConnected ? "Enter Room" : "Connecting..."}
-          </Button>
+            {/* Role selector */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Role
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowRoles(p => !p)}
+                className="w-full h-12 rounded-xl bg-white/[0.04] border border-white/10
+                  flex items-center justify-between px-4 text-sm transition-all
+                  hover:bg-white/[0.06] hover:border-white/20"
+              >
+                <span className="flex items-center gap-2 text-foreground">
+                  {roleLabels[role].icon}
+                  {roleLabels[role].label}
+                </span>
+                <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${showRoles ? "rotate-180" : ""}`} />
+              </button>
 
-          {/* Store link */}
-          <button
-            type="button"
-            onClick={() => setLocation("/store")}
-            className="w-full flex items-center justify-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
-          >
-            <ShoppingBag className="w-3.5 h-3.5" />
-            متجر الإطارات — 20 جنيه للإطار
-          </button>
-        </form>
+              {showRoles && (
+                <div className="rounded-xl overflow-hidden border border-white/10 bg-card/80 backdrop-blur-xl animate-slide-up">
+                  {(Object.keys(roleLabels) as Role[]).map(r => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => { setRole(r); setShowRoles(false); }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-left text-sm
+                        hover:bg-white/5 transition-colors
+                        ${role === r ? "bg-primary/10 text-primary" : "text-foreground"}`}
+                    >
+                      <span className={role === r ? "text-primary" : "text-muted-foreground"}>
+                        {roleLabels[r].icon}
+                      </span>
+                      <div>
+                        <p className="font-medium">{roleLabels[r].label}</p>
+                        <p className="text-[11px] text-muted-foreground">{roleLabels[r].desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Secret input (animated in for owner/rm) */}
+            {role !== "user" && (
+              <div className="space-y-1.5 animate-slide-up">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Secret Password
+                </label>
+                <Input
+                  type="password"
+                  value={secret}
+                  onChange={e => setSecret(e.target.value)}
+                  placeholder="Enter secret"
+                  required
+                  className="h-12 bg-white/[0.04] border-white/10 focus:border-primary/50
+                    focus:ring-0 focus:ring-offset-0 rounded-xl text-base"
+                  data-testid="input-secret"
+                />
+              </div>
+            )}
+
+            {/* Join button */}
+            <Button
+              type="submit"
+              disabled={!isConnected || !name.trim() || joining}
+              className="w-full h-13 rounded-xl font-bold text-base
+                bg-gradient-to-r from-primary to-violet-500
+                hover:from-primary/90 hover:to-violet-500/90
+                shadow-[0_0_20px_rgba(139,92,246,0.4)]
+                hover:shadow-[0_0_30px_rgba(139,92,246,0.6)]
+                disabled:opacity-50 disabled:cursor-not-allowed
+                transition-all duration-200 text-white"
+              style={{ height: "52px" }}
+              data-testid="button-join"
+            >
+              {!isConnected ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Connecting…
+                </span>
+              ) : joining ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Entering…
+                </span>
+              ) : (
+                "Enter Room →"
+              )}
+            </Button>
+          </form>
+
+          {/* Footer */}
+          <p className="text-center text-[11px] text-muted-foreground/40 mt-6 font-mono">
+            🔒 End-to-end encrypted · WebRTC · Opus
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -1,16 +1,17 @@
-import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
+import {
+  createContext, useContext, useEffect, useRef, useState, ReactNode,
+} from "react";
 import { io, Socket } from "socket.io-client";
-import { Participant } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
-export type SocketParticipant = Participant & { isRM?: boolean; borderStyle?: string };
-
-interface JoinData {
+export interface SocketParticipant {
+  id: string;
   name: string;
+  isMuted: boolean;
   isOwner: boolean;
-  ownerSecret?: string;
-  borderStyle?: string;
+  isRM: boolean;
+  isSpeaking: boolean;
 }
 
 interface SocketContextState {
@@ -20,14 +21,14 @@ interface SocketContextState {
   isOwner: boolean;
   isRM: boolean;
   isConnected: boolean;
-  joinRoom: (name: string, isOwner: boolean, ownerSecret?: string, borderStyle?: string) => void;
+  joinRoom: (name: string, ownerSecret?: string) => void;
   leaveRoom: () => void;
   setSelfMuted: (muted: boolean) => void;
   setSpeaking: (isSpeaking: boolean) => void;
   ownerMute: (targetId: string, muted: boolean) => void;
+  ownerKick: (targetId: string) => void;
   ownerScare: (targetId: string) => void;
   ownerFlashlight: (targetId: string, on: boolean) => void;
-  ownerKick: (targetId: string) => void;
   scareTriggered: boolean;
   flashlightOn: boolean;
   isForceMuted: boolean;
@@ -36,49 +37,51 @@ interface SocketContextState {
 
 const SocketContext = createContext<SocketContextState | null>(null);
 
+interface JoinData { name: string; ownerSecret?: string; }
+
 export function SocketProvider({ children }: { children: ReactNode }) {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket]           = useState<Socket | null>(null);
   const [participants, setParticipants] = useState<SocketParticipant[]>([]);
   const [participantId, setParticipantId] = useState<string | null>(null);
-  const [isOwner, setIsOwner] = useState(false);
-  const [isRM, setIsRM] = useState(false);
+  const [isOwner, setIsOwner]         = useState(false);
+  const [isRM, setIsRM]               = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [scareTriggered, setScareTriggered] = useState(false);
   const [flashlightOn, setFlashlightOn] = useState(false);
   const [isForceMuted, setIsForceMuted] = useState(false);
 
   const joinDataRef = useRef<JoinData | null>(null);
-  const inRoomRef = useRef(false);
+  const inRoomRef   = useRef(false);
 
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    const newSocket = io({
+    const sock = io({
       path: "/api/socket.io",
       autoConnect: false,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
+      reconnectionDelayMax: 8000,
+      randomizationFactor: 0.4,
     });
-    setSocket(newSocket);
 
-    newSocket.on("connect", () => {
+    setSocket(sock);
+
+    sock.on("connect", () => {
       setIsConnected(true);
       if (joinDataRef.current && inRoomRef.current) {
-        newSocket.emit("join", joinDataRef.current);
+        sock.emit("join", joinDataRef.current);
       }
     });
 
-    newSocket.on("disconnect", (reason) => {
+    sock.on("disconnect", (reason) => {
       setIsConnected(false);
-      if (reason === "io client disconnect") {
-        inRoomRef.current = false;
-      }
+      if (reason === "io client disconnect") inRoomRef.current = false;
     });
 
-    newSocket.on("joined", (data: {
+    sock.on("joined", (data: {
       participantId: string;
       isOwner: boolean;
       isRM: boolean;
@@ -92,91 +95,84 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setLocation("/room");
     });
 
-    newSocket.on("participant-joined", (p: SocketParticipant) => {
+    sock.on("participant-joined", (p: SocketParticipant) => {
       setParticipants(prev => [...prev.filter(x => x.id !== p.id), p]);
     });
 
-    newSocket.on("participant-left", ({ participantId: pid }: { participantId: string }) => {
+    sock.on("participant-left", ({ participantId: pid }: { participantId: string }) => {
       setParticipants(prev => prev.filter(x => x.id !== pid));
     });
 
-    newSocket.on("participant-muted", ({ participantId: pid, isMuted }: { participantId: string; isMuted: boolean }) => {
+    sock.on("participant-muted", ({ participantId: pid, isMuted }: { participantId: string; isMuted: boolean }) => {
       setParticipants(prev => prev.map(p => p.id === pid ? { ...p, isMuted } : p));
     });
 
-    newSocket.on("participant-speaking", ({ participantId: pid, isSpeaking }: { participantId: string; isSpeaking: boolean }) => {
+    sock.on("participant-speaking", ({ participantId: pid, isSpeaking }: { participantId: string; isSpeaking: boolean }) => {
       setParticipants(prev => prev.map(p => p.id === pid ? { ...p, isSpeaking } : p));
     });
 
-    newSocket.on("force-mute", ({ muted }: { muted: boolean }) => {
+    sock.on("force-mute", ({ muted }: { muted: boolean }) => {
       setIsForceMuted(muted);
-      toast({ title: muted ? "تم كتم صوتك من قبل الأونر" : "تم رفع كتم صوتك", variant: muted ? "destructive" : "default" });
+      toast({ title: muted ? "تم كتم صوتك" : "تم رفع كتم صوتك", variant: muted ? "destructive" : "default" });
     });
 
-    newSocket.on("scare", () => {
-      setScareTriggered(true);
-      setTimeout(() => setScareTriggered(false), 4000);
-    });
+    sock.on("scare", () => { setScareTriggered(true); setTimeout(() => setScareTriggered(false), 4000); });
+    sock.on("flashlight", ({ on }: { on: boolean }) => setFlashlightOn(on));
 
-    newSocket.on("flashlight", ({ on }: { on: boolean }) => setFlashlightOn(on));
-
-    newSocket.on("kicked", () => {
+    sock.on("kicked", () => {
       joinDataRef.current = null;
-      inRoomRef.current = false;
-      toast({ title: "تم طردك من الروم.", variant: "destructive" });
-      newSocket.disconnect();
+      inRoomRef.current   = false;
+      toast({ title: "تم طردك من الروم", variant: "destructive" });
+      sock.disconnect();
       setParticipantId(null);
       setParticipants([]);
       setIsOwner(false);
       setIsRM(false);
       setLocation("/");
-      setTimeout(() => newSocket.connect(), 100);
+      setTimeout(() => sock.connect(), 100);
     });
 
-    newSocket.on("error", (err: { message: string }) => {
-      toast({ title: "Error", description: err.message || "Something went wrong", variant: "destructive" });
+    sock.on("error", (err: { message: string }) => {
+      toast({ title: err.message || "Error", variant: "destructive" });
     });
 
-    newSocket.connect();
-    return () => { newSocket.disconnect(); };
+    sock.connect();
+    return () => { sock.disconnect(); };
   }, [setLocation, toast]);
 
-  const joinRoom = (name: string, isOwnerReq: boolean, ownerSecret?: string, borderStyle?: string) => {
-    if (socket) {
-      const data: JoinData = { name, isOwner: isOwnerReq, ownerSecret, borderStyle };
-      joinDataRef.current = data;
-      socket.emit("join", data);
-    }
+  const joinRoom = (name: string, ownerSecret?: string) => {
+    if (!socket) return;
+    const data: JoinData = { name, ownerSecret };
+    joinDataRef.current = data;
+    socket.emit("join", data);
   };
 
   const leaveRoom = () => {
-    if (socket) {
-      joinDataRef.current = null;
-      inRoomRef.current = false;
-      socket.emit("leave");
-      socket.disconnect();
-      setParticipantId(null);
-      setParticipants([]);
-      setIsOwner(false);
-      setIsRM(false);
-      setLocation("/");
-      setTimeout(() => socket.connect(), 100);
-    }
+    if (!socket) return;
+    joinDataRef.current = null;
+    inRoomRef.current   = false;
+    socket.disconnect();
+    setParticipantId(null);
+    setParticipants([]);
+    setIsOwner(false);
+    setIsRM(false);
+    setLocation("/");
+    setTimeout(() => socket.connect(), 100);
   };
 
-  const setSelfMuted = (muted: boolean) => socket?.emit("self-mute", { muted });
-  const setSpeaking = (isSpeaking: boolean) => socket?.emit("speaking", { isSpeaking });
-  const ownerMute = (targetId: string, muted: boolean) => socket?.emit("owner-mute", { targetId, muted });
-  const ownerScare = (targetId: string) => socket?.emit("owner-scare", { targetId });
-  const ownerFlashlight = (targetId: string, on: boolean) => socket?.emit("owner-flashlight", { targetId, on });
-  const ownerKick = (targetId: string) => socket?.emit("owner-kick", { targetId });
-  const clearScare = () => setScareTriggered(false);
+  const setSelfMuted    = (m: boolean) => socket?.emit("self-mute", { muted: m });
+  const setSpeaking     = (s: boolean) => socket?.emit("speaking", { isSpeaking: s });
+  const ownerMute       = (t: string, m: boolean) => socket?.emit("owner-mute", { targetId: t, muted: m });
+  const ownerKick       = (t: string) => socket?.emit("owner-kick", { targetId: t });
+  const ownerScare      = (t: string) => socket?.emit("owner-scare", { targetId: t });
+  const ownerFlashlight = (t: string, on: boolean) => socket?.emit("owner-flashlight", { targetId: t, on });
+  const clearScare      = () => setScareTriggered(false);
 
   return (
     <SocketContext.Provider value={{
       socket, participants, participantId, isOwner, isRM, isConnected,
       joinRoom, leaveRoom, setSelfMuted, setSpeaking,
-      ownerMute, ownerScare, ownerFlashlight, ownerKick,
+      ownerMute, ownerKick, ownerScare, ownerFlashlight,
       scareTriggered, flashlightOn, isForceMuted, clearScare,
     }}>
       {children}
@@ -186,6 +182,6 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
 export function useSocket() {
   const ctx = useContext(SocketContext);
-  if (!ctx) throw new Error("useSocket must be used within a SocketProvider");
+  if (!ctx) throw new Error("useSocket must be inside SocketProvider");
   return ctx;
 }

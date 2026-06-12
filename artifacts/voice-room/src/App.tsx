@@ -6,24 +6,20 @@ import { SocketProvider } from "@/context/SocketContext";
 import NotFound from "@/pages/not-found";
 import JoinPage from "@/pages/JoinPage";
 import RoomPage from "@/pages/RoomPage";
-import StorePage from "@/pages/StorePage";
-import UnlockPage from "@/pages/UnlockPage";
 
 const queryClient = new QueryClient();
 
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={JoinPage} />
+      <Route path="/"    component={JoinPage} />
       <Route path="/room" component={RoomPage} />
-      <Route path="/store" component={StorePage} />
-      <Route path="/unlock" component={UnlockPage} />
       <Route component={NotFound} />
     </Switch>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -37,5 +33,3 @@ function App() {
     </QueryClientProvider>
   );
 }
-
-export default App;

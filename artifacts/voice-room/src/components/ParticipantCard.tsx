@@ -1,150 +1,168 @@
 import { useState } from "react";
+import { Ghost, Mic, MicOff, Crown, Shield, Zap, UserMinus, Power, PowerOff } from "lucide-react";
 import { useSocket, SocketParticipant } from "@/context/SocketContext";
-import { getBorderById } from "@/lib/borders";
-import { Ghost, Mic, MicOff, Zap, Power, PowerOff, UserMinus, ShieldAlert, Crown, X } from "lucide-react";
+import { NetworkQuality } from "@/hooks/useWebRTC";
 import { Button } from "@/components/ui/button";
 
-export function ParticipantCard({ participant }: { participant: SocketParticipant }) {
-  const { isOwner, participantId, ownerMute, ownerScare, ownerFlashlight, ownerKick } = useSocket();
-  const isSelf = participant.id === participantId;
-  const [selected, setSelected] = useState(false);
+interface Props {
+  participant: SocketParticipant;
+  isSelf: boolean;
+  quality?: NetworkQuality;
+}
 
-  const isRMCard = !!participant.isRM;
-  const isOwnerCard = participant.isOwner && !isRMCard;
+const QUALITY_DOT: Record<NetworkQuality, string> = {
+  excellent: "quality-dot-excellent",
+  good:      "quality-dot-good",
+  fair:      "quality-dot-fair",
+  poor:      "quality-dot-poor",
+  unknown:   "quality-dot-unknown",
+};
 
-  // Resolve purchased border (only for non-owner, non-RM users)
-  const border = (!isRMCard && !isOwnerCard)
-    ? getBorderById(participant.borderStyle || "default")
-    : null;
+const QUALITY_LABEL: Record<NetworkQuality, string> = {
+  excellent: "Excellent",
+  good:      "Good",
+  fair:      "Fair",
+  poor:      "Poor",
+  unknown:   "",
+};
 
-  const handleClick = () => {
-    if (isOwner && !isSelf) setSelected(prev => !prev);
-  };
+export function ParticipantCard({ participant, isSelf, quality }: Props) {
+  const { isOwner, ownerMute, ownerScare, ownerFlashlight, ownerKick } = useSocket();
+  const [expanded, setExpanded] = useState(false);
 
-  // Build card classes
-  let cardClass = "";
-  if (isRMCard) {
-    // Static pink glow — no animation
-    cardClass = "border-pink-border bg-gradient-to-b from-pink-950/40 to-card/60";
+  const canControl = isOwner && !isSelf && !participant.isOwner;
+
+  // Visual state
+  const isSpeaking = participant.isSpeaking && !participant.isMuted;
+  const isOwnerCard = participant.isOwner;
+  const isRMCard    = participant.isRM;
+
+  // Avatar ring styling
+  let avatarRingClass = "border-white/10";
+  let avatarBg        = "bg-white/5";
+  let avatarText      = "text-white/50";
+  if (isSpeaking) {
+    avatarRingClass = "border-transparent animate-speaking";
+    avatarText      = "text-cyan-300";
+    avatarBg        = "bg-cyan-950/40";
   } else if (isOwnerCard) {
-    cardClass = "border-amber-500/70 shadow-[0_0_18px_rgba(245,158,11,0.35)] bg-gradient-to-b from-amber-950/40 to-card/60";
-  } else if (participant.isSpeaking) {
-    cardClass = `${border?.cardClass || "border-border bg-card/40"} animate-pulse-glow`;
-  } else {
-    cardClass = border?.cardClass || "border-border bg-card/40";
+    avatarRingClass = "border-amber-400/60 glow-owner";
+    avatarText      = "text-amber-300";
+    avatarBg        = "bg-amber-950/40";
+  } else if (isRMCard) {
+    avatarRingClass = "border-pink-400/60 glow-rm";
+    avatarText      = "text-pink-300";
+    avatarBg        = "bg-pink-950/40";
   }
 
   return (
     <div
-      onClick={handleClick}
-      className={`relative overflow-hidden rounded-lg border p-4 transition-all duration-300
-        ${cardClass}
-        ${isOwner && !isSelf ? "cursor-pointer hover:scale-[1.02]" : ""}
-        ${selected ? "ring-2 ring-primary/60 scale-[1.02]" : ""}
+      className={`relative rounded-2xl overflow-hidden glass transition-all duration-300
+        ${isSpeaking ? "ring-1 ring-cyan-400/30 shadow-[0_0_20px_rgba(34,211,238,0.15)]" : ""}
+        ${isOwnerCard && !isSpeaking ? "ring-1 ring-amber-400/20" : ""}
+        ${isRMCard && !isSpeaking ? "ring-1 ring-pink-400/20" : ""}
+        ${canControl ? "cursor-pointer hover:scale-[1.02] hover:ring-1 hover:ring-primary/30" : ""}
+        animate-slide-up
       `}
-      data-testid={`card-participant-${participant.id}`}
+      onClick={() => canControl && setExpanded(p => !p)}
     >
-      {/* Top colour strip */}
-      {isRMCard && <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-pink-400 to-transparent" />}
-      {isOwnerCard && <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />}
+      <div className="p-4 flex flex-col items-center gap-3">
+        {/* Network quality dot */}
+        {quality && quality !== "unknown" && (
+          <div className="absolute top-2.5 right-2.5 flex items-center gap-1">
+            <span
+              className={`w-2 h-2 rounded-full ${QUALITY_DOT[quality]}`}
+              title={QUALITY_LABEL[quality]}
+            />
+          </div>
+        )}
 
-      <div className="flex flex-col h-full gap-3">
-        <div className="flex items-center gap-3">
-          {/* Avatar */}
-          <div className="relative">
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 transition-all duration-300
-              ${isRMCard
-                ? "border-pink-400 bg-pink-950/60 text-pink-300 shadow-[0_0_8px_rgba(236,72,153,0.4)]"
-                : isOwnerCard
-                  ? "border-amber-400 bg-amber-950/60 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.4)]"
-                  : participant.isSpeaking
-                    ? "border-primary text-primary animate-heartbeat"
-                    : border?.avatarClass || "border-muted text-muted-foreground bg-background"
-              }
-            `}>
-              <Ghost className="w-6 h-6" />
+        {/* Role badge */}
+        {(isOwnerCard || isRMCard) && (
+          <div className={`absolute top-2.5 left-2.5 flex items-center gap-1 rounded-full px-1.5 py-0.5
+            ${isOwnerCard ? "bg-amber-500/20 text-amber-300" : "bg-pink-500/20 text-pink-300"}`}>
+            {isOwnerCard
+              ? <Crown className="w-3 h-3" />
+              : <Shield className="w-3 h-3" />}
+          </div>
+        )}
+
+        {/* Avatar */}
+        <div className="relative">
+          <div className={`w-16 h-16 rounded-full border-2 flex items-center justify-center
+            transition-all duration-300 ${avatarRingClass} ${avatarBg}`}>
+            <Ghost className={`w-8 h-8 transition-all duration-300 ${avatarText}
+              ${isSpeaking ? "animate-heartbeat" : ""}`} />
+          </div>
+
+          {/* Mute badge */}
+          {participant.isMuted && (
+            <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-destructive rounded-full
+              flex items-center justify-center ring-2 ring-background">
+              <MicOff className="w-3 h-3 text-white" />
             </div>
-
-            {participant.isSpeaking && !participant.isMuted && (
-              <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-primary rounded-full animate-ping" />
-            )}
-            {participant.isMuted && (
-              <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-destructive rounded-full flex items-center justify-center">
-                <MicOff className="w-3 h-3 text-destructive-foreground" />
-              </span>
-            )}
-          </div>
-
-          {/* Name + role */}
-          <div className="flex-1 min-w-0">
-            <p className={`font-bold text-sm truncate flex items-center gap-1.5
-              ${isRMCard ? "text-pink-300" : isOwnerCard ? "text-amber-300" : border?.textClass || "text-foreground"}
-            `}>
-              {participant.name}
-              {isSelf && <span className="text-xs font-normal text-muted-foreground">(You)</span>}
-            </p>
-            {isRMCard && (
-              <p className="text-[10px] text-pink-400/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                <Crown className="w-3 h-3" /> RM
-              </p>
-            )}
-            {isOwnerCard && (
-              <p className="text-[10px] text-amber-500/80 font-mono uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                <ShieldAlert className="w-3 h-3" /> Owner
-              </p>
-            )}
-          </div>
-
-          {selected && isOwner && !isSelf && (
-            <button
-              onClick={e => { e.stopPropagation(); setSelected(false); }}
-              className="text-muted-foreground hover:text-foreground"
-              data-testid={`button-closecontrols-${participant.id}`}
-            >
-              <X className="w-3 h-3" />
-            </button>
+          )}
+          {!participant.isMuted && isSpeaking && (
+            <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-cyan-500 rounded-full
+              flex items-center justify-center ring-2 ring-background">
+              <Mic className="w-3 h-3 text-white" />
+            </div>
           )}
         </div>
 
-        {/* Owner controls */}
-        {isOwner && !isSelf && selected && (
-          <div onClick={e => e.stopPropagation()} className="pt-2 border-t border-primary/20 grid grid-cols-2 gap-1.5">
-            <Button variant="outline" size="sm"
-              className={`h-8 text-xs border-border/50 gap-1.5 ${participant.isMuted ? "text-destructive bg-destructive/10 border-destructive/40" : "text-muted-foreground hover:text-destructive hover:bg-destructive/10 hover:border-destructive/40"}`}
-              onClick={() => ownerMute(participant.id, !participant.isMuted)}
-              data-testid={`button-ownermute-${participant.id}`}>
-              {participant.isMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+        {/* Name */}
+        <div className="text-center min-w-0 w-full">
+          <p className={`font-semibold text-sm truncate
+            ${isOwnerCard ? "text-amber-200" : isRMCard ? "text-pink-200" : isSpeaking ? "text-cyan-200" : "text-foreground"}`}>
+            {participant.name}
+            {isSelf && <span className="text-muted-foreground font-normal"> (you)</span>}
+          </p>
+          {isOwnerCard && <p className="text-[10px] text-amber-400/70 font-mono uppercase tracking-widest mt-0.5">Owner</p>}
+          {isRMCard    && <p className="text-[10px] text-pink-400/70  font-mono uppercase tracking-widest mt-0.5">RM</p>}
+        </div>
+
+        {/* Owner controls — expand on tap */}
+        {canControl && expanded && (
+          <div
+            className="w-full border-t border-white/8 pt-3 grid grid-cols-2 gap-1.5 animate-slide-up"
+            onClick={e => e.stopPropagation()}
+          >
+            <Button size="sm" variant="outline"
+              className={`h-8 text-xs gap-1.5 border-white/10
+                ${participant.isMuted ? "text-destructive border-destructive/30 bg-destructive/10" : "text-muted-foreground hover:text-destructive hover:border-destructive/30"}`}
+              onClick={() => ownerMute(participant.id, !participant.isMuted)}>
+              {participant.isMuted ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
               {participant.isMuted ? "Unmute" : "Mute"}
             </Button>
-            <Button variant="outline" size="sm"
-              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10"
-              onClick={() => ownerScare(participant.id)}
-              data-testid={`button-ownerscare-${participant.id}`}>
+
+            <Button size="sm" variant="outline"
+              className="h-8 text-xs gap-1.5 border-white/10 text-muted-foreground hover:text-primary hover:border-primary/30"
+              onClick={() => ownerScare(participant.id)}>
               <Zap className="w-3 h-3" /> Scare
             </Button>
-            <Button variant="outline" size="sm"
-              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-yellow-400 hover:bg-yellow-500/10"
-              onClick={() => ownerFlashlight(participant.id, true)}
-              data-testid={`button-ownerflashon-${participant.id}`}>
-              <Power className="w-3 h-3" /> Flash ON
+
+            <Button size="sm" variant="outline"
+              className="h-8 text-xs gap-1.5 border-white/10 text-muted-foreground hover:text-yellow-400"
+              onClick={() => ownerFlashlight(participant.id, true)}>
+              <Power className="w-3 h-3" /> Flash
             </Button>
-            <Button variant="outline" size="sm"
-              className="h-8 text-xs border-border/50 gap-1.5 text-muted-foreground hover:text-slate-400 hover:bg-slate-500/10"
-              onClick={() => ownerFlashlight(participant.id, false)}
-              data-testid={`button-ownerflashoff-${participant.id}`}>
-              <PowerOff className="w-3 h-3" /> Flash OFF
+
+            <Button size="sm" variant="outline"
+              className="h-8 text-xs gap-1.5 border-white/10 text-muted-foreground hover:text-slate-400"
+              onClick={() => ownerFlashlight(participant.id, false)}>
+              <PowerOff className="w-3 h-3" /> Dark
             </Button>
-            <Button variant="outline" size="sm"
-              className="h-8 text-xs col-span-2 border-destructive/30 gap-1.5 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
-              onClick={() => ownerKick(participant.id)}
-              data-testid={`button-ownerkick-${participant.id}`}>
+
+            <Button size="sm" variant="outline"
+              className="h-8 text-xs col-span-2 gap-1.5 border-destructive/20 text-destructive/60 hover:text-destructive hover:bg-destructive/10"
+              onClick={() => ownerKick(participant.id)}>
               <UserMinus className="w-3 h-3" /> Kick Out
             </Button>
           </div>
         )}
 
-        {isOwner && !isSelf && !selected && (
-          <p className="text-[10px] text-muted-foreground/40 font-mono text-center">tap to control</p>
+        {canControl && !expanded && (
+          <p className="text-[10px] text-white/20 font-mono">tap to control</p>
         )}
       </div>
     </div>

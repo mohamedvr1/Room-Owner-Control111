@@ -1,38 +1,27 @@
 /**
- * useWebRTC — Production WebRTC mesh audio engine.
+ * useWebRTC — Production WebRTC mesh.
  *
- * Remote audio: HTML <audio> elements — the most reliable cross-browser approach.
- *   AudioContext-based routing was causing "no sound" on many browsers because
- *   AudioContext requires a user gesture to resume, and the chain can silently
- *   fail at any node. Audio elements auto-play on track arrival.
+ * In the multi-room architecture, the initial participant list is passed as a
+ * prop (received from SocketContext which already processed "room-joined" before
+ * this hook mounts). New joiners are handled via the "participant-joined" event.
  *
- * Local audio: whatever MediaStream is passed in (may be gain-processed for owner boost).
- *
- * Features:
- *   ✔ Opus 48kHz FEC + DTX + low-latency framing
- *   ✔ ICE candidate buffering (no lost candidates before remote SDP)
- *   ✔ Joiner-initiates offer (eliminates race conditions / glare)
- *   ✔ ICE restart on connection failure
- *   ✔ STUN + TURN fallback
- *   ✔ Per-peer network quality via getStats() every 4 s
- *   ✔ Adaptive bitrate via setParameters()
+ * Remote audio: HTML <audio> elements — most reliable cross-browser approach.
+ * Features: Opus FEC+DTX, ICE buffering, ICE restart, STUN+TURN, adaptive bitrate.
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useSocket } from "../context/SocketContext";
 
-// ── Network quality ────────────────────────────────────────────────────────
 export type NetworkQuality = "excellent" | "good" | "fair" | "poor" | "unknown";
 
 function rttToQuality(rttMs: number, lossRate: number): NetworkQuality {
-  if (rttMs <= 0) return "unknown";
-  if (rttMs < 80  && lossRate < 0.02) return "excellent";
-  if (rttMs < 180 && lossRate < 0.06) return "good";
-  if (rttMs < 350 && lossRate < 0.12) return "fair";
+  if (rttMs <= 0)                               return "unknown";
+  if (rttMs < 80  && lossRate < 0.02)           return "excellent";
+  if (rttMs < 180 && lossRate < 0.06)           return "good";
+  if (rttMs < 350 && lossRate < 0.12)           return "fair";
   return "poor";
 }
 
-// ── Opus SDP optimisation ──────────────────────────────────────────────────
 function applyOpusSdp(sdp: string): string {
   const lines = sdp.split("\n");
   let pt: string | null = null;
@@ -43,29 +32,19 @@ function applyOpusSdp(sdp: string): string {
   if (!pt) return sdp;
   return lines.map(l => {
     if (!l.startsWith(`a=fmtp:${pt} `)) return l;
-    const rest = l.slice(`a=fmtp:${pt} `.length);
     const p: Record<string, string> = {};
-    rest.split(";").forEach(kv => {
+    l.slice(`a=fmtp:${pt} `.length).split(";").forEach(kv => {
       const [k, v] = kv.trim().split("=");
       if (k) p[k.trim()] = v?.trim() ?? "1";
     });
-    p["minptime"]          = "10";
-    p["useinbandfec"]      = "1";
-    p["usedtx"]            = "1";
-    p["stereo"]            = "0";
-    p["maxplaybackrate"]   = "48000";
-    p["maxaveragebitrate"] = "32000";
-    return `a=fmtp:${pt} ${Object.entries(p).map(([k,v]) => `${k}=${v}`).join(";")}`;
+    p["minptime"] = "10"; p["useinbandfec"] = "1"; p["usedtx"] = "1";
+    p["stereo"] = "0"; p["maxplaybackrate"] = "48000"; p["maxaveragebitrate"] = "32000";
+    return `a=fmtp:${pt} ${Object.entries(p).map(([k, v]) => `${k}=${v}`).join(";")}`;
   }).join("\n");
 }
 
-// ── Adaptive bitrate ──────────────────────────────────────────────────────
 const BITRATE_MAP: Record<NetworkQuality, number> = {
-  excellent: 32000,
-  good:      24000,
-  fair:      16000,
-  poor:       8000,
-  unknown:   24000,
+  excellent: 32000, good: 24000, fair: 16000, poor: 8000, unknown: 24000,
 };
 
 async function setBitrate(pc: RTCPeerConnection, quality: NetworkQuality) {
@@ -76,26 +55,19 @@ async function setBitrate(pc: RTCPeerConnection, quality: NetworkQuality) {
       if (!params.encodings?.length) params.encodings = [{}];
       params.encodings[0].maxBitrate = BITRATE_MAP[quality];
       await sender.setParameters(params);
-    } catch { /* Firefox may reject — ignore */ }
+    } catch { /* ignore */ }
   }
 }
 
-// ── ICE servers ────────────────────────────────────────────────────────────
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   {
-    urls: [
-      "turn:openrelay.metered.ca:80",
-      "turn:openrelay.metered.ca:443",
-      "turn:openrelay.metered.ca:443?transport=tcp",
-    ],
-    username: "openrelayproject",
-    credential: "openrelayproject",
+    urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turn:openrelay.metered.ca:443?transport=tcp"],
+    username: "openrelayproject", credential: "openrelayproject",
   },
 ];
 
-// ── Peer state ─────────────────────────────────────────────────────────────
 interface Peer {
   pc: RTCPeerConnection;
   audioEl: HTMLAudioElement | null;
@@ -104,46 +76,38 @@ interface Peer {
   hasRemoteSdp: boolean;
 }
 
-// ── Hook ───────────────────────────────────────────────────────────────────
 export function useWebRTC(
   localStream: MediaStream | null,
   isSpeakerOff: boolean,
+  roomParticipants: { id: string }[], // current room participants (from SocketContext)
+  selfId: string | null,
 ): { networkQuality: Map<string, NetworkQuality> } {
-  const { socket, participantId } = useSocket();
+  const { socket } = useSocket();
 
   const peersRef       = useRef<Map<string, Peer>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const speakerOffRef  = useRef(isSpeakerOff);
-
   const [networkQuality, setNetworkQuality] = useState<Map<string, NetworkQuality>>(new Map());
-  const qualityRef = useRef<Map<string, NetworkQuality>>(new Map());
+  const qualityRef     = useRef<Map<string, NetworkQuality>>(new Map());
+  const initialCalledRef = useRef(false);
 
-  // Sync refs
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
-
   useEffect(() => {
     speakerOffRef.current = isSpeakerOff;
-    // Mute/unmute all existing audio elements
-    peersRef.current.forEach(peer => {
-      if (peer.audioEl) peer.audioEl.muted = isSpeakerOff;
-    });
+    peersRef.current.forEach(peer => { if (peer.audioEl) peer.audioEl.muted = isSpeakerOff; });
   }, [isSpeakerOff]);
 
-  // ── Close peer ─────────────────────────────────────────────────────────
+  // ── Close peer ───────────────────────────────────────────────────────────
   const closePeer = useCallback((peerId: string) => {
     const peer = peersRef.current.get(peerId);
     if (!peer) return;
     peer.pc.close();
-    if (peer.audioEl) {
-      peer.audioEl.srcObject = null;
-      peer.audioEl.remove();
-    }
+    if (peer.audioEl) { peer.audioEl.srcObject = null; peer.audioEl.remove(); }
     peersRef.current.delete(peerId);
     qualityRef.current.delete(peerId);
     setNetworkQuality(new Map(qualityRef.current));
   }, []);
 
-  // ── Drain ICE buffer ───────────────────────────────────────────────────
   const drainIce = useCallback(async (peer: Peer) => {
     for (const c of peer.iceBuf) {
       try { await peer.pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* ignore */ }
@@ -151,50 +115,26 @@ export function useWebRTC(
     peer.iceBuf = [];
   }, []);
 
-  // ── Create RTCPeerConnection ───────────────────────────────────────────
+  // ── Create RTCPeerConnection ─────────────────────────────────────────────
   const createPeer = useCallback((peerId: string): Peer => {
-    const pc = new RTCPeerConnection({
-      iceServers:    ICE_SERVERS,
-      bundlePolicy:  "max-bundle",
-      rtcpMuxPolicy: "require",
-    });
-
+    const pc           = new RTCPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
     const remoteStream = new MediaStream();
-
-    const peer: Peer = { pc, audioEl: null, remoteStream, iceBuf: [], hasRemoteSdp: false };
+    const peer: Peer   = { pc, audioEl: null, remoteStream, iceBuf: [], hasRemoteSdp: false };
     peersRef.current.set(peerId, peer);
 
-    // ICE candidates → relay to server
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate && socket) {
-        socket.emit("rtc-ice", { targetId: peerId, candidate: candidate.toJSON() });
-      }
+      if (candidate && socket) socket.emit("rtc-ice", { targetId: peerId, candidate: candidate.toJSON() });
     };
+    pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") pc.restartIce(); };
 
-    // ICE restart on failure
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") pc.restartIce();
-    };
-
-    // Remote audio — HTML Audio element: reliable across all browsers
     pc.ontrack = ({ track, streams }) => {
-      // Use the stream that came with the track, or our own MediaStream
       const stream = streams[0] ?? remoteStream;
-
-      // Ensure remoteStream has the track
-      if (!remoteStream.getTrackById(track.id)) {
-        remoteStream.addTrack(track);
-      }
+      if (!remoteStream.getTrackById(track.id)) remoteStream.addTrack(track);
 
       if (peer.audioEl) {
-        // Audio element already created; ensure it's pointed at the right stream
-        if (peer.audioEl.srcObject !== stream) {
-          peer.audioEl.srcObject = remoteStream;
-        }
+        if (peer.audioEl.srcObject !== stream) peer.audioEl.srcObject = remoteStream;
         return;
       }
-
-      // Create audio element
       const el = document.createElement("audio");
       el.setAttribute("autoplay", "true");
       el.setAttribute("playsinline", "true");
@@ -203,29 +143,22 @@ export function useWebRTC(
       el.style.cssText = "position:absolute;width:0;height:0;pointer-events:none;";
       document.body.appendChild(el);
       peer.audioEl = el;
-
-      // play() — required on some browsers even with autoplay attr
       el.play().catch(() => {
-        // If autoplay blocked, retry on next user gesture
-        const retry = () => { el.play().catch(() => {}); };
+        const retry = () => el.play().catch(() => {});
         document.addEventListener("click",    retry, { once: true });
         document.addEventListener("touchend", retry, { once: true });
       });
     };
 
-    // Add local tracks so remote can hear us
     const stream = localStreamRef.current;
-    if (stream) {
-      stream.getTracks().forEach(t => pc.addTrack(t, stream));
-    }
-
+    if (stream) stream.getTracks().forEach(t => pc.addTrack(t, stream));
     return peer;
   }, [socket]);
 
-  // ── Offer (we call, they answer) ─────────────────────────────────────────
+  // ── Offer ────────────────────────────────────────────────────────────────
   const call = useCallback(async (peerId: string) => {
     if (!socket) return;
-    const peer = createPeer(peerId);
+    const peer  = createPeer(peerId);
     try {
       const offer = await peer.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
       offer.sdp   = applyOpusSdp(offer.sdp ?? "");
@@ -234,20 +167,27 @@ export function useWebRTC(
     } catch (e) { console.error("offer failed", e); }
   }, [socket, createPeer]);
 
-  // ── Socket event wiring ───────────────────────────────────────────────
+  // ── Initial call: offer all existing participants when hook mounts ────────
+  // (SocketContext already processed "room-joined" and set participants before
+  //  RoomPage renders, so we can't rely on the socket event here)
+  useEffect(() => {
+    if (initialCalledRef.current || !socket || !selfId) return;
+    const others = roomParticipants.filter(p => p.id !== selfId);
+    if (others.length === 0) return;
+    initialCalledRef.current = true;
+    for (const p of others) {
+      if (!peersRef.current.has(p.id)) call(p.id).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, selfId, roomParticipants, call]);
+
+  // ── Socket events ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
 
-    const onJoined = (data: { participants: { id: string }[] }) => {
-      // We just joined — offer every peer who's already in the room
-      for (const p of data.participants) {
-        if (p.id !== participantId) call(p.id).catch(() => {});
-      }
-    };
-
     const onParticipantJoined = (p: { id: string }) => {
-      // They joined after us — they will offer us, but fall back if not heard from in 1.5 s
-      if (p.id === participantId) return;
+      if (p.id === selfId) return;
+      // Give them 1.5 s to send an offer first; if not, we call them
       setTimeout(() => {
         if (!peersRef.current.has(p.id)) call(p.id).catch(() => {});
       }, 1500);
@@ -256,8 +196,7 @@ export function useWebRTC(
     const onOffer = async ({ fromId, sdp }: { fromId: string; sdp: RTCSessionDescriptionInit }) => {
       if (peersRef.current.has(fromId)) closePeer(fromId);
       const peer = createPeer(fromId);
-      const desc = new RTCSessionDescription({ type: sdp.type, sdp: applyOpusSdp(sdp.sdp ?? "") });
-      await peer.pc.setRemoteDescription(desc);
+      await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: sdp.type, sdp: applyOpusSdp(sdp.sdp ?? "") }));
       peer.hasRemoteSdp = true;
       await drainIce(peer);
       const answer = await peer.pc.createAnswer();
@@ -269,8 +208,7 @@ export function useWebRTC(
     const onAnswer = async ({ fromId, sdp }: { fromId: string; sdp: RTCSessionDescriptionInit }) => {
       const peer = peersRef.current.get(fromId);
       if (!peer || peer.pc.signalingState !== "have-local-offer") return;
-      const desc = new RTCSessionDescription({ type: sdp.type, sdp: applyOpusSdp(sdp.sdp ?? "") });
-      await peer.pc.setRemoteDescription(desc);
+      await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: sdp.type, sdp: applyOpusSdp(sdp.sdp ?? "") }));
       peer.hasRemoteSdp = true;
       await drainIce(peer);
     };
@@ -285,36 +223,31 @@ export function useWebRTC(
       }
     };
 
-    const onLeft = ({ participantId: id }: { participantId: string }) => closePeer(id);
-
-    socket.on("joined",             onJoined);
     socket.on("participant-joined", onParticipantJoined);
     socket.on("rtc-offer",          onOffer);
     socket.on("rtc-answer",         onAnswer);
     socket.on("rtc-ice",            onIce);
-    socket.on("participant-left",   onLeft);
+    socket.on("participant-left",   ({ participantId: id }: { participantId: string }) => closePeer(id));
 
     return () => {
-      socket.off("joined",             onJoined);
       socket.off("participant-joined", onParticipantJoined);
-      socket.off("rtc-offer",          onOffer);
-      socket.off("rtc-answer",         onAnswer);
-      socket.off("rtc-ice",            onIce);
-      socket.off("participant-left",   onLeft);
+      socket.off("rtc-offer",  onOffer);
+      socket.off("rtc-answer", onAnswer);
+      socket.off("rtc-ice",    onIce);
+      socket.off("participant-left");
     };
-  }, [socket, participantId, call, createPeer, closePeer, drainIce]);
+  }, [socket, selfId, call, createPeer, closePeer, drainIce]);
 
-  // ── If localStream arrives after peers already created, add tracks ────────
+  // ── Add local stream to peers if it arrived late ─────────────────────────
   useEffect(() => {
     if (!localStream) return;
     peersRef.current.forEach(peer => {
-      if (peer.pc.getSenders().filter(s => s.track).length === 0) {
+      if (peer.pc.getSenders().filter(s => s.track).length === 0)
         localStream.getTracks().forEach(t => peer.pc.addTrack(t, localStream));
-      }
     });
   }, [localStream]);
 
-  // ── Network quality polling ────────────────────────────────────────────
+  // ── Network quality polling ──────────────────────────────────────────────
   useEffect(() => {
     const poll = async () => {
       let changed = false;
@@ -324,13 +257,8 @@ export function useWebRTC(
           const stats = await peer.pc.getStats();
           let rttMs = 0, totalLost = 0, totalSent = 0;
           stats.forEach(r => {
-            if (r.type === "remote-inbound-rtp" && r.kind === "audio") {
-              rttMs += (r.roundTripTime ?? 0) * 1000;
-              totalLost += r.packetsLost ?? 0;
-            }
-            if (r.type === "outbound-rtp" && r.kind === "audio") {
-              totalSent += r.packetsSent ?? 0;
-            }
+            if (r.type === "remote-inbound-rtp" && r.kind === "audio") { rttMs += (r.roundTripTime ?? 0) * 1000; totalLost += r.packetsLost ?? 0; }
+            if (r.type === "outbound-rtp"        && r.kind === "audio") { totalSent += r.packetsSent ?? 0; }
           });
           const lossRate = totalSent > 0 ? totalLost / totalSent : 0;
           const q = rttToQuality(rttMs, lossRate);
@@ -339,16 +267,14 @@ export function useWebRTC(
             qualityRef.current.set(peerId, q);
             changed = true;
           }
-        } catch { /* PC may be closed */ }
+        } catch { /* ignore */ }
       }
       if (changed) setNetworkQuality(new Map(qualityRef.current));
     };
-
     const id = setInterval(poll, 4000);
     return () => clearInterval(id);
   }, []);
 
-  // ── Cleanup all peers on unmount ─────────────────────────────────────
   useEffect(() => {
     return () => { peersRef.current.forEach((_, id) => closePeer(id)); };
   }, [closePeer]);

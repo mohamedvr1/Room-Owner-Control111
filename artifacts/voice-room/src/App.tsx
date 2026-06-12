@@ -4,16 +4,18 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SocketProvider } from "@/context/SocketContext";
 import NotFound from "@/pages/not-found";
-import JoinPage from "@/pages/JoinPage";
-import RoomPage from "@/pages/RoomPage";
+import JoinPage  from "@/pages/JoinPage";
+import LobbyPage from "@/pages/LobbyPage";
+import RoomPage  from "@/pages/RoomPage";
 
 const queryClient = new QueryClient();
 
 function Router() {
   return (
     <Switch>
-      <Route path="/"    component={JoinPage} />
-      <Route path="/room" component={RoomPage} />
+      <Route path="/"      component={JoinPage}  />
+      <Route path="/lobby" component={LobbyPage} />
+      <Route path="/room"  component={RoomPage}  />
       <Route component={NotFound} />
     </Switch>
   );

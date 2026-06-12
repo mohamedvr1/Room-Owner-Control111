@@ -5,52 +5,49 @@ import { useSpeakingDetection } from "@/hooks/useSpeakingDetection";
 import { ParticipantCard } from "@/components/ParticipantCard";
 import { ScaryOverlay } from "@/components/ScaryOverlay";
 import {
-  Mic, MicOff, LogOut, Ghost, Volume2, VolumeX,
-  Wifi, WifiOff, Radio,
+  Mic, MicOff, LogOut, Ghost, Volume2, VolumeX, Radio, Zap,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 
 export default function RoomPage() {
   const {
-    participants, participantId, isConnected,
+    participants, participantId, isOwner, isConnected,
     setSelfMuted, leaveRoom, flashlightOn, isForceMuted,
   } = useSocket();
 
-  const [, setLocation]       = useLocation();
-  const { toast }             = useToast();
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [audioCtx, setAudioCtx]       = useState<AudioContext | null>(null);
-  const [isMuted, setIsMuted]         = useState(false);
+  const [, setLocation]      = useLocation();
+  const { toast }            = useToast();
+
+  // Local raw microphone stream
+  const [localStream, setLocalStream]         = useState<MediaStream | null>(null);
+  // Processed stream sent to WebRTC (may have gain boost for owner)
+  const [processedStream, setProcessedStream] = useState<MediaStream | null>(null);
+
+  const [isMuted, setIsMuted]           = useState(false);
   const [isSpeakerOff, setIsSpeakerOff] = useState(false);
-  const [isPTT, setIsPTT]             = useState(false);
-  const [pttActive, setPttActive]     = useState(false);
+  const [isPTT, setIsPTT]               = useState(false);
+  const [pttActive, setPttActive]       = useState(false);
+  const [isBoosted, setIsBoosted]       = useState(false);  // owner mic boost
   const [confirmLeave, setConfirmLeave] = useState(false);
+
+  // Refs for owner gain processing
+  const boostCtxRef  = useRef<AudioContext | null>(null);
+  const boostGainRef = useRef<GainNode | null>(null);
   const flashStreamRef = useRef<MediaStream | null>(null);
 
   const effectiveMuted = isPTT ? !pttActive : (isMuted || isForceMuted);
 
-  // WebRTC mesh — P2P audio with Opus codec
-  const { networkQuality } = useWebRTC(localStream, audioCtx, isSpeakerOff);
+  // ── WebRTC: use processed stream (gain-boosted for owner) ─────────────
+  const { networkQuality } = useWebRTC(processedStream, isSpeakerOff);
   useSpeakingDetection(localStream, effectiveMuted);
 
-  // Redirect if not joined
+  // ── Redirect if not joined ────────────────────────────────────────────
   useEffect(() => {
     if (!participantId) setLocation("/");
   }, [participantId, setLocation]);
 
-  // Shared AudioContext at 48 kHz (Opus native rate)
-  useEffect(() => {
-    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
-    setAudioCtx(ctx);
-    const resume = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
-    document.addEventListener("click",    resume, { once: true });
-    document.addEventListener("touchend", resume, { once: true });
-    ctx.resume().catch(() => {});
-    return () => { ctx.close().catch(() => {}); };
-  }, []);
-
-  // Microphone with full browser-native audio processing
+  // ── Microphone capture ────────────────────────────────────────────────
   useEffect(() => {
     let stream: MediaStream;
     (async () => {
@@ -68,8 +65,8 @@ export default function RoomPage() {
         setLocalStream(stream);
       } catch {
         toast({
-          title: "Microphone access denied",
-          description: "Allow microphone access in browser settings.",
+          title: "Microphone denied",
+          description: "Allow microphone access and refresh.",
           variant: "destructive",
         });
       }
@@ -77,18 +74,72 @@ export default function RoomPage() {
     return () => { stream?.getTracks().forEach(t => t.stop()); };
   }, [toast]);
 
-  // Sync mute state
+  // ── Owner gain processing pipeline ───────────────────────────────────
+  // Guest: processedStream = localStream directly.
+  // Owner: localStream → AudioContext Source → GainNode → MediaStreamDestination
+  //        Boost button changes gain.value between 1.0 and 2.8.
+  useEffect(() => {
+    if (!localStream) return;
+
+    if (!isOwner) {
+      // Non-owner: use raw stream
+      setProcessedStream(localStream);
+      return;
+    }
+
+    // Owner: build gain-processing chain
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext({ sampleRate: 48000 });
+    } catch {
+      setProcessedStream(localStream);
+      return;
+    }
+    boostCtxRef.current = ctx;
+
+    const src  = ctx.createMediaStreamSource(localStream);
+    const gain = ctx.createGain();
+    gain.gain.value = 1.0;
+    boostGainRef.current = gain;
+
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(gain);
+    gain.connect(dest);
+
+    // Resume ctx (may need user gesture — RoomPage is only shown after joining)
+    ctx.resume().catch(() => {});
+
+    setProcessedStream(dest.stream);
+
+    return () => {
+      ctx.close().catch(() => {});
+      boostCtxRef.current  = null;
+      boostGainRef.current = null;
+    };
+  }, [localStream, isOwner]);
+
+  // ── Update boost gain value ───────────────────────────────────────────
+  useEffect(() => {
+    if (!boostGainRef.current) return;
+    boostGainRef.current.gain.setTargetAtTime(
+      isBoosted ? 2.8 : 1.0,
+      boostCtxRef.current?.currentTime ?? 0,
+      0.05,  // 50 ms smooth ramp
+    );
+  }, [isBoosted]);
+
+  // ── Mute local tracks ─────────────────────────────────────────────────
   useEffect(() => {
     if (!localStream) return;
     localStream.getAudioTracks().forEach(t => { t.enabled = !effectiveMuted; });
     setSelfMuted(effectiveMuted);
   }, [effectiveMuted, localStream, setSelfMuted]);
 
-  // PTT handlers
-  const startPTT = useCallback(() => { if (isPTT) setPttActive(true); }, [isPTT]);
+  // ── PTT handlers ──────────────────────────────────────────────────────
+  const startPTT = useCallback(() => { if (isPTT) setPttActive(true);  }, [isPTT]);
   const stopPTT  = useCallback(() => { if (isPTT) setPttActive(false); }, [isPTT]);
 
-  // Flashlight
+  // ── Flashlight ────────────────────────────────────────────────────────
   useEffect(() => {
     if (flashlightOn) {
       navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
@@ -105,8 +156,8 @@ export default function RoomPage() {
     return () => { flashStreamRef.current?.getTracks().forEach(t => t.stop()); };
   }, [flashlightOn]);
 
-  // Overall network quality from all peers
-  const worstQuality = (): NetworkQuality => {
+  // ── Overall network quality ───────────────────────────────────────────
+  const overallQuality = (): NetworkQuality => {
     const order: NetworkQuality[] = ["poor", "fair", "good", "excellent", "unknown"];
     let worst: NetworkQuality = "unknown";
     for (const q of networkQuality.values()) {
@@ -114,9 +165,7 @@ export default function RoomPage() {
     }
     return worst;
   };
-  const overallQuality = worstQuality();
-
-  const qualityColor: Record<NetworkQuality, string> = {
+  const oqColor: Record<NetworkQuality, string> = {
     excellent: "text-emerald-400",
     good:      "text-lime-400",
     fair:      "text-amber-400",
@@ -132,7 +181,7 @@ export default function RoomPage() {
     <div className="min-h-dvh flex flex-col bg-background relative overflow-hidden">
       <ScaryOverlay />
 
-      {/* Background glow */}
+      {/* Ambient glow */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px]
           bg-primary/6 blur-[80px] rounded-full" />
@@ -151,18 +200,12 @@ export default function RoomPage() {
             GhostRoom
           </span>
         </div>
-
         <div className="flex items-center gap-3">
-          {/* Network status */}
           {networkQuality.size > 0 && (
-            <div className={`flex items-center gap-1.5 text-xs font-mono ${qualityColor[overallQuality]}`}>
-              {isConnected
-                ? <Wifi className="w-3.5 h-3.5" />
-                : <WifiOff className="w-3.5 h-3.5 text-destructive animate-pulse" />}
-              <span className="hidden sm:inline capitalize">{overallQuality}</span>
-            </div>
+            <span className={`text-xs font-mono hidden sm:inline capitalize ${oqColor[overallQuality()]}`}>
+              {overallQuality()}
+            </span>
           )}
-
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground font-mono">
             <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-500" : "bg-destructive animate-pulse"}`} />
             <span>{participants.length} soul{participants.length !== 1 ? "s" : ""}</span>
@@ -176,9 +219,7 @@ export default function RoomPage() {
           {participants.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 gap-4">
               <Ghost className="w-16 h-16 text-white/10 animate-float-ghost" />
-              <p className="text-muted-foreground/50 font-mono text-sm">
-                Waiting for souls to enter…
-              </p>
+              <p className="text-muted-foreground/50 font-mono text-sm">Waiting for souls…</p>
             </div>
           ) : (
             <div className={`grid gap-3
@@ -199,33 +240,52 @@ export default function RoomPage() {
         </div>
       </main>
 
-      {/* Control bar */}
+      {/* ── Control bar ───────────────────────────────────────────────── */}
       <footer className="relative z-10 px-4 py-5 border-t border-white/6 bg-background/60 backdrop-blur-xl">
         <div className="max-w-sm mx-auto">
-          <div className="flex items-center justify-center gap-4">
+          <div className="flex items-center justify-center gap-3">
 
-            {/* Speaker */}
+            {/* Speaker toggle */}
             <button
               onClick={() => setIsSpeakerOff(p => !p)}
-              className={`w-14 h-14 rounded-2xl flex items-center justify-center
-                transition-all duration-200 active:scale-95
+              className={`w-13 h-13 rounded-2xl flex items-center justify-center transition-all active:scale-95
                 ${isSpeakerOff
                   ? "bg-destructive/20 text-destructive ring-1 ring-destructive/30"
-                  : "glass text-muted-foreground hover:text-foreground hover:bg-white/8"}`}
-              data-testid="button-togglespeaker"
+                  : "glass text-muted-foreground hover:text-foreground"}`}
+              style={{ width: 52, height: 52 }}
+              title="Toggle speaker"
             >
-              {isSpeakerOff ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
+              {isSpeakerOff ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
             </button>
 
-            {/* PTT toggle */}
+            {/* Owner mic boost — only visible to owner */}
+            {isOwner && (
+              <button
+                onClick={() => setIsBoosted(p => !p)}
+                className={`w-13 h-13 rounded-2xl flex flex-col items-center justify-center gap-0.5
+                  transition-all active:scale-95 border
+                  ${isBoosted
+                    ? "bg-amber-500/20 text-amber-300 border-amber-400/40 shadow-[0_0_14px_rgba(251,191,36,0.35)]"
+                    : "glass text-muted-foreground border-transparent hover:text-amber-300"}`}
+                style={{ width: 52, height: 52 }}
+                title="Mic boost (Owner only)"
+              >
+                <Zap className="w-4 h-4" />
+                <span className="text-[9px] font-mono uppercase tracking-widest leading-none">
+                  {isBoosted ? "2.8×" : "boost"}
+                </span>
+              </button>
+            )}
+
+            {/* PTT mode toggle */}
             <button
               onClick={() => setIsPTT(p => !p)}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center
-                transition-all duration-200 active:scale-95 text-xs font-mono
+              className={`rounded-xl flex items-center justify-center transition-all active:scale-95
                 ${isPTT
                   ? "bg-primary/20 text-primary ring-1 ring-primary/30"
                   : "glass text-muted-foreground/50 hover:text-muted-foreground"}`}
-              title="Toggle push-to-talk"
+              style={{ width: 40, height: 40 }}
+              title="Push-to-talk mode"
             >
               <Radio className="w-4 h-4" />
             </button>
@@ -236,32 +296,29 @@ export default function RoomPage() {
                 onPointerDown={startPTT}
                 onPointerUp={stopPTT}
                 onPointerLeave={stopPTT}
-                className={`w-20 h-20 rounded-3xl flex items-center justify-center
+                className={`rounded-3xl flex flex-col items-center justify-center gap-1
                   transition-all duration-100 select-none touch-none
                   ${pttActive
                     ? "bg-cyan-500 shadow-[0_0_30px_rgba(34,211,238,0.6)] scale-105 text-white"
                     : "glass-strong text-muted-foreground"}`}
-                data-testid="button-ptt"
+                style={{ width: 76, height: 76 }}
               >
-                <div className="flex flex-col items-center gap-1">
-                  <Mic className="w-7 h-7" />
-                  <span className="text-[9px] font-mono uppercase tracking-widest">
-                    {pttActive ? "Live" : "Hold"}
-                  </span>
-                </div>
+                <Mic className="w-7 h-7" />
+                <span className="text-[9px] font-mono uppercase tracking-widest">
+                  {pttActive ? "Live" : "Hold"}
+                </span>
               </button>
             ) : (
               <button
                 onClick={() => { if (!isForceMuted) setIsMuted(p => !p); }}
                 disabled={isForceMuted}
-                className={`w-20 h-20 rounded-3xl flex items-center justify-center
+                className={`rounded-3xl flex items-center justify-center
                   transition-all duration-200 active:scale-95
                   ${isForceMuted ? "opacity-50 cursor-not-allowed" : ""}
                   ${effectiveMuted
                     ? "bg-destructive/90 text-white shadow-[0_0_20px_rgba(239,68,68,0.4)]"
-                    : "bg-primary text-white shadow-[0_0_20px_rgba(139,92,246,0.4)] hover:bg-primary/90"
-                  }`}
-                data-testid="button-togglemute"
+                    : "bg-primary text-white shadow-[0_0_20px_rgba(139,92,246,0.4)] hover:bg-primary/90"}`}
+                style={{ width: 76, height: 76 }}
               >
                 {effectiveMuted ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
               </button>
@@ -270,10 +327,10 @@ export default function RoomPage() {
             {/* Leave */}
             <button
               onClick={() => setConfirmLeave(true)}
-              className="w-14 h-14 rounded-2xl glass flex items-center justify-center
-                text-muted-foreground hover:text-destructive hover:bg-destructive/10
-                hover:ring-1 hover:ring-destructive/30 transition-all duration-200 active:scale-95"
-              data-testid="button-leaveroom"
+              className="glass flex items-center justify-center text-muted-foreground
+                hover:text-destructive hover:ring-1 hover:ring-destructive/30
+                rounded-2xl transition-all active:scale-95"
+              style={{ width: 52, height: 52 }}
             >
               <LogOut className="w-5 h-5" />
             </button>
@@ -282,34 +339,30 @@ export default function RoomPage() {
           {/* Status text */}
           <div className="text-center mt-3 h-4">
             {isForceMuted && (
-              <p className="text-xs text-destructive/70 font-mono animate-pulse">
-                muted by owner
-              </p>
+              <p className="text-xs text-destructive/70 font-mono animate-pulse">muted by owner</p>
             )}
-            {isPTT && !isForceMuted && (
-              <p className="text-xs text-muted-foreground/50 font-mono">
-                push-to-talk active — hold mic to speak
-              </p>
+            {isOwner && isBoosted && !isForceMuted && (
+              <p className="text-xs text-amber-400/60 font-mono">mic boost active — 2.8×</p>
+            )}
+            {isPTT && !isForceMuted && !isBoosted && (
+              <p className="text-xs text-muted-foreground/50 font-mono">hold mic button to speak</p>
             )}
           </div>
         </div>
       </footer>
 
-      {/* Leave dialog */}
+      {/* ── Leave dialog ─────────────────────────────────────────────── */}
       {confirmLeave && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="glass-strong rounded-2xl p-6 max-w-[300px] w-full text-center space-y-5 shadow-2xl animate-slide-up">
             <Ghost className="w-10 h-10 text-primary mx-auto animate-float-ghost" />
             <div>
               <h2 className="font-mono font-bold text-lg text-foreground">Leave the void?</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                Your soul will leave GhostRoom.
-              </p>
+              <p className="text-sm text-muted-foreground mt-1">Your soul will leave GhostRoom.</p>
             </div>
             <div className="flex gap-3">
               <button
-                className="flex-1 h-11 rounded-xl border border-white/10 text-sm
-                  hover:bg-white/5 transition-all text-foreground"
+                className="flex-1 h-11 rounded-xl border border-white/10 text-sm hover:bg-white/5 transition-all"
                 onClick={() => setConfirmLeave(false)}
               >
                 Stay

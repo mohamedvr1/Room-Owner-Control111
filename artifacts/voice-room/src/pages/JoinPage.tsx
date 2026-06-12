@@ -26,8 +26,8 @@ export default function JoinPage() {
 
   const roleLabels: Record<Role, { label: string; icon: ReactNode; desc: string }> = {
     user:  { label: "Guest",       icon: <Ghost className="w-4 h-4" />,        desc: "Join as a regular participant" },
-    owner: { label: "Owner",       icon: <Crown className="w-4 h-4" />,        desc: "Full room controls (147147)" },
-    rm:    { label: "Room Master", icon: <ShieldCheck className="w-4 h-4" />,  desc: "Room master role (1471471)" },
+    owner: { label: "Owner",       icon: <Crown className="w-4 h-4" />,        desc: "Full room controls + mic boost" },
+    rm:    { label: "Room Master", icon: <ShieldCheck className="w-4 h-4" />,  desc: "Room master privileges" },
   };
 
   return (

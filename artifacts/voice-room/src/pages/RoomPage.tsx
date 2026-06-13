@@ -15,8 +15,7 @@ export default function RoomPage() {
   const {
     participants, participantId, isOwner, isConnected,
     setSelfMuted, leaveVoiceRoom, flashlightOn, isForceMuted,
-    currentRoomId, currentRoomCreator,
-    remoteScreenFromId, signalScreenShare,
+    currentRoomId, currentRoomCreator, remoteScreenFromId, signalScreenShare,
   } = useSocket();
 
   const [, setLocation] = useLocation();
@@ -25,18 +24,18 @@ export default function RoomPage() {
   const [localStream, setLocalStream]         = useState<MediaStream | null>(null);
   const [processedStream, setProcessedStream] = useState<MediaStream | null>(null);
 
-  const [isMuted, setIsMuted]             = useState(false);
-  const [isSpeakerOff, setIsSpeakerOff]   = useState(false);
-  const [isPTT, setIsPTT]                 = useState(false);
-  const [pttActive, setPttActive]         = useState(false);
-  const [isBoosted, setIsBoosted]         = useState(false);
-  const [isDeepVoice, setIsDeepVoice]     = useState(false);
-  const [confirmLeave, setConfirmLeave]   = useState(false);
+  const [isMuted, setIsMuted]           = useState(false);
+  const [isSpeakerOff, setIsSpeakerOff] = useState(false);
+  const [isPTT, setIsPTT]               = useState(false);
+  const [pttActive, setPttActive]       = useState(false);
+  const [isBoosted, setIsBoosted]       = useState(false);
+  const [isDeepVoice, setIsDeepVoice]   = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
 
   // Screen sharing
-  const [screenStream, setScreenStream]         = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream]           = useState<MediaStream | null>(null);
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
-  const screenVideoRef                          = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const boostCtxRef   = useRef<AudioContext | null>(null);
   const boostGainRef  = useRef<GainNode | null>(null);
@@ -45,16 +44,11 @@ export default function RoomPage() {
 
   const effectiveMuted = isPTT ? !pttActive : (isMuted || isForceMuted);
 
-  // Am I the room creator?
   const iAmCreator = !!(participantId && participants.find(p => p.id === participantId && p.isRoomCreator));
 
-  // Remote video callback from useWebRTC
+  // Remote video from WebRTC ontrack
   const handleRemoteVideo = useCallback((stream: MediaStream | null) => {
     setRemoteVideoStream(stream);
-    if (screenVideoRef.current) {
-      screenVideoRef.current.srcObject = stream;
-      if (stream) screenVideoRef.current.play().catch(() => {});
-    }
   }, []);
 
   const { networkQuality, addScreenTrack, removeScreenTrack } =
@@ -66,16 +60,13 @@ export default function RoomPage() {
     if (!participantId || !currentRoomId) setLocation("/lobby");
   }, [participantId, currentRoomId, setLocation]);
 
-  // Microphone
+  // ── Microphone ────────────────────────────────────────────────────────────
   useEffect(() => {
     let stream: MediaStream;
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true, noiseSuppression: true,
-            autoGainControl: true, sampleRate: 48000, channelCount: 1,
-          },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 },
           video: false,
         });
         setLocalStream(stream);
@@ -86,11 +77,10 @@ export default function RoomPage() {
     return () => { stream?.getTracks().forEach(t => t.stop()); };
   }, [toast]);
 
-  // Owner: AudioContext chain (bass boost + gain)
+  // ── Owner AudioContext chain ───────────────────────────────────────────────
   useEffect(() => {
     if (!localStream) return;
     if (!isOwner) { setProcessedStream(localStream); return; }
-
     let ctx: AudioContext;
     try { ctx = new AudioContext({ sampleRate: 48000 }); }
     catch { setProcessedStream(localStream); return; }
@@ -99,25 +89,20 @@ export default function RoomPage() {
     const src      = ctx.createMediaStreamSource(localStream);
     const highPass = ctx.createBiquadFilter();
     highPass.type  = "highpass"; highPass.frequency.value = 80; highPass.Q.value = 0.5;
-
     const lowShelf = ctx.createBiquadFilter();
     lowShelf.type  = "lowshelf"; lowShelf.frequency.value = 200; lowShelf.gain.value = 0;
     deepFilterRef.current = lowShelf;
-
     const lowPass  = ctx.createBiquadFilter();
     lowPass.type   = "lowpass"; lowPass.frequency.value = 4000;
-
     const gain     = ctx.createGain();
     gain.gain.value = 1.0;
     boostGainRef.current = gain;
-
     const dest = ctx.createMediaStreamDestination();
     src.connect(highPass);
     highPass.connect(lowShelf);
     lowShelf.connect(lowPass);
     lowPass.connect(gain);
     gain.connect(dest);
-
     ctx.resume().catch(() => {});
     setProcessedStream(dest.stream);
 
@@ -128,13 +113,11 @@ export default function RoomPage() {
   }, [localStream, isOwner]);
 
   useEffect(() => {
-    if (!boostGainRef.current) return;
-    boostGainRef.current.gain.setTargetAtTime(isBoosted ? 2.8 : 1.0, boostCtxRef.current?.currentTime ?? 0, 0.05);
+    boostGainRef.current?.gain.setTargetAtTime(isBoosted ? 2.8 : 1.0, boostCtxRef.current?.currentTime ?? 0, 0.05);
   }, [isBoosted]);
 
   useEffect(() => {
-    if (!deepFilterRef.current) return;
-    deepFilterRef.current.gain.setTargetAtTime(isDeepVoice ? 14 : 0, boostCtxRef.current?.currentTime ?? 0, 0.05);
+    deepFilterRef.current?.gain.setTargetAtTime(isDeepVoice ? 14 : 0, boostCtxRef.current?.currentTime ?? 0, 0.05);
   }, [isDeepVoice]);
 
   // Mute local tracks
@@ -145,7 +128,7 @@ export default function RoomPage() {
   }, [effectiveMuted, localStream, setSelfMuted]);
 
   // PTT
-  const startPTT = useCallback(() => { if (isPTT) setPttActive(true);  }, [isPTT]);
+  const startPTT = useCallback(() => { if (isPTT) setPttActive(true); },  [isPTT]);
   const stopPTT  = useCallback(() => { if (isPTT) setPttActive(false); }, [isPTT]);
 
   // Flashlight
@@ -163,12 +146,11 @@ export default function RoomPage() {
     return () => { flashStreamRef.current?.getTracks().forEach(t => t.stop()); };
   }, [flashlightOn]);
 
-  // Screen share
+  // ── Screen share ──────────────────────────────────────────────────────────
   const handleScreenShare = useCallback(async () => {
     if (screenStream) {
-      // Stop sharing
       const track = screenStream.getVideoTracks()[0];
-      if (track) removeScreenTrack(track);
+      if (track) { await removeScreenTrack(track); track.stop(); }
       screenStream.getTracks().forEach(t => t.stop());
       setScreenStream(null);
       signalScreenShare(false);
@@ -180,41 +162,48 @@ export default function RoomPage() {
         audio: false,
       });
       const track = stream.getVideoTracks()[0];
-      track.onended = () => {
-        removeScreenTrack(track);
+      track.onended = async () => {
+        await removeScreenTrack(track);
         setScreenStream(null);
         signalScreenShare(false);
       };
       setScreenStream(stream);
-      addScreenTrack(track, stream);
+      await addScreenTrack(track, stream);
       signalScreenShare(true);
-    } catch { /* user cancelled */ }
+    } catch { /* user cancelled or permission denied */ }
   }, [screenStream, addScreenTrack, removeScreenTrack, signalScreenShare]);
 
-  // Clean up screen share on unmount
+  // Attach remote video stream to the <video> element
+  useEffect(() => {
+    const el = remoteVideoRef.current;
+    if (!el) return;
+    if (remoteVideoStream) {
+      el.srcObject = remoteVideoStream;
+      el.play().catch(() => {
+        const retry = () => el.play().catch(() => {});
+        document.addEventListener("click", retry, { once: true });
+      });
+    } else {
+      el.srcObject = null;
+    }
+  }, [remoteVideoStream]);
+
+  // Clear remote video when no one is sharing
+  useEffect(() => {
+    if (!remoteScreenFromId) setRemoteVideoStream(null);
+  }, [remoteScreenFromId]);
+
+  // Cleanup screen share on unmount
   useEffect(() => {
     return () => {
       if (screenStream) {
         const track = screenStream.getVideoTracks()[0];
-        if (track) removeScreenTrack(track);
+        if (track) removeScreenTrack(track).catch(() => {});
         screenStream.getTracks().forEach(t => t.stop());
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Update remote video element when remoteVideoStream changes
-  useEffect(() => {
-    if (screenVideoRef.current && remoteVideoStream) {
-      screenVideoRef.current.srcObject = remoteVideoStream;
-      screenVideoRef.current.play().catch(() => {});
-    }
-  }, [remoteVideoStream]);
-
-  // Clear remote video if no one is sharing
-  useEffect(() => {
-    if (!remoteScreenFromId) setRemoteVideoStream(null);
-  }, [remoteScreenFromId]);
 
   const overallQuality = (): NetworkQuality => {
     const order: NetworkQuality[] = ["poor", "fair", "good", "excellent", "unknown"];
@@ -223,19 +212,17 @@ export default function RoomPage() {
       if (order.indexOf(q) < order.indexOf(worst)) worst = q;
     return worst;
   };
+
   const oqColor: Record<NetworkQuality, string> = {
     excellent: "text-emerald-400", good: "text-lime-400",
     fair: "text-amber-400", poor: "text-red-400", unknown: "text-muted-foreground",
   };
 
   const sharerName = remoteScreenFromId
-    ? participants.find(p => p.id === remoteScreenFromId)?.name ?? "Someone"
+    ? (participants.find(p => p.id === remoteScreenFromId)?.name ?? "Someone")
     : null;
 
   if (!participantId || !currentRoomId) return null;
-
-  const speakerCount = participants.filter(p => p.isSpeaking && !p.isMuted).length;
-  void speakerCount;
 
   return (
     <div className="min-h-dvh flex flex-col bg-background relative overflow-hidden">
@@ -245,16 +232,20 @@ export default function RoomPage() {
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-primary/5 blur-[80px] rounded-full" />
       </div>
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
+      {/* Header */}
       <header className="relative z-10 flex items-center justify-between px-5 py-4
         border-b border-white/6 bg-background/60 backdrop-blur-xl">
         <div className="flex items-center gap-2.5">
           <Ghost className="w-5 h-5 text-primary" />
-          <span className="font-mono font-bold text-lg tracking-tight">{currentRoomCreator ? `${currentRoomCreator}'s Room` : "GhostRoom"}</span>
+          <span className="font-mono font-bold text-lg tracking-tight">
+            {currentRoomCreator ? `${currentRoomCreator}'s Room` : "GhostRoom"}
+          </span>
         </div>
         <div className="flex items-center gap-3">
           {networkQuality.size > 0 && (
-            <span className={`text-xs font-mono hidden sm:inline capitalize ${oqColor[overallQuality()]}`}>{overallQuality()}</span>
+            <span className={`text-xs font-mono hidden sm:inline capitalize ${oqColor[overallQuality()]}`}>
+              {overallQuality()}
+            </span>
           )}
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground font-mono">
             <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-500" : "bg-destructive animate-pulse"}`} />
@@ -263,30 +254,33 @@ export default function RoomPage() {
         </div>
       </header>
 
-      {/* ── Remote screen share overlay ────────────────────────────────────── */}
+      {/* Remote screen share area */}
       {(remoteVideoStream || remoteScreenFromId) && (
         <div className="relative z-10 mx-4 mt-3 rounded-2xl overflow-hidden bg-black shadow-2xl ring-1 ring-primary/20">
           <div className="absolute top-2 left-3 z-10 text-white/60 text-xs font-mono flex items-center gap-1">
             <Monitor className="w-3 h-3" /> {sharerName} is sharing
           </div>
-          <button onClick={() => { setRemoteVideoStream(null); }}
-            className="absolute top-2 right-2 z-10 w-7 h-7 rounded-lg bg-black/60 flex items-center justify-center
-              text-white/60 hover:text-white hover:bg-black/80 transition-colors">
+          <button
+            onClick={() => setRemoteVideoStream(null)}
+            className="absolute top-2 right-2 z-10 w-7 h-7 rounded-lg bg-black/60
+              flex items-center justify-center text-white/60 hover:text-white hover:bg-black/80 transition-colors">
             <X className="w-4 h-4" />
           </button>
           <video
-            ref={el => {
-              screenVideoRef.current = el;
-              if (el && remoteVideoStream) { el.srcObject = remoteVideoStream; el.play().catch(() => {}); }
-            }}
+            ref={remoteVideoRef}
             autoPlay playsInline
             className="w-full max-h-[45vh] object-contain bg-black"
           />
+          {!remoteVideoStream && (
+            <div className="flex items-center justify-center h-20 text-white/30 text-sm font-mono">
+              Waiting for screen…
+            </div>
+          )}
         </div>
       )}
 
-      {/* ── Participants grid ──────────────────────────────────────────────── */}
-      <main className="flex-1 relative z-10 p-4 overflow-y-auto">
+      {/* Participants */}
+      <main className="flex-1 relative z-10 p-4 overflow-y-auto pb-40">
         <div className="max-w-4xl mx-auto">
           {participants.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 gap-4">
@@ -309,12 +303,12 @@ export default function RoomPage() {
         </div>
       </main>
 
-      {/* ── Control bar ──────────────────────────────────────────────────── */}
+      {/* Control bar */}
       <footer className="relative z-10 px-4 py-5 border-t border-white/6 bg-background/60 backdrop-blur-xl">
         <div className="max-w-sm mx-auto">
           <div className="flex items-center justify-center gap-2 flex-wrap">
 
-            {/* Speaker */}
+            {/* Speaker off */}
             <button onClick={() => setIsSpeakerOff(p => !p)}
               className={`rounded-2xl flex items-center justify-center transition-all active:scale-95
                 ${isSpeakerOff ? "bg-destructive/20 text-destructive ring-1 ring-destructive/30" : "glass text-muted-foreground hover:text-foreground"}`}
@@ -366,12 +360,13 @@ export default function RoomPage() {
               <Radio className="w-4 h-4" />
             </button>
 
-            {/* Main mic button */}
+            {/* Mic button */}
             {isPTT ? (
               <button onPointerDown={startPTT} onPointerUp={stopPTT} onPointerLeave={stopPTT}
                 className={`rounded-3xl flex flex-col items-center justify-center gap-1
                   transition-all duration-100 select-none touch-none
-                  ${pttActive ? "bg-cyan-500 shadow-[0_0_30px_rgba(34,211,238,0.6)] scale-105 text-white" : "glass-strong text-muted-foreground"}`}
+                  ${pttActive ? "bg-cyan-500 shadow-[0_0_30px_rgba(34,211,238,0.6)] scale-105 text-white"
+                              : "glass-strong text-muted-foreground"}`}
                 style={{ width: 72, height: 72 }}>
                 <Mic className="w-7 h-7" />
                 <span className="text-[9px] font-mono">{pttActive ? "Live" : "Hold"}</span>
@@ -399,22 +394,22 @@ export default function RoomPage() {
           {/* Status line */}
           <div className="text-center mt-3 h-4">
             {isForceMuted && <p className="text-xs text-destructive/70 font-mono animate-pulse">muted by owner</p>}
-            {!isForceMuted && isOwner && (isBoosted || isDeepVoice) && (
+            {!isForceMuted && screenStream && (
+              <p className="text-xs text-cyan-400/60 font-mono animate-pulse">● sharing screen</p>
+            )}
+            {!isForceMuted && !screenStream && isOwner && (isBoosted || isDeepVoice) && (
               <p className="text-xs text-amber-400/60 font-mono">
                 {[isBoosted && "2.8× boost", isDeepVoice && "deep voice"].filter(Boolean).join(" · ")}
               </p>
             )}
-            {!isForceMuted && !isBoosted && !isDeepVoice && screenStream && (
-              <p className="text-xs text-cyan-400/60 font-mono animate-pulse">● sharing screen</p>
-            )}
-            {isPTT && !isBoosted && !isDeepVoice && !screenStream && !isForceMuted && (
+            {isPTT && !isForceMuted && !screenStream && !isBoosted && !isDeepVoice && (
               <p className="text-xs text-muted-foreground/50 font-mono">hold mic to speak</p>
             )}
           </div>
         </div>
       </footer>
 
-      {/* ── Leave dialog ──────────────────────────────────────────────────── */}
+      {/* Leave dialog */}
       {confirmLeave && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="glass-strong rounded-2xl p-6 max-w-[300px] w-full text-center space-y-5 shadow-2xl animate-slide-up">

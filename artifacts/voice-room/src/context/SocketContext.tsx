@@ -14,7 +14,7 @@ export interface SocketParticipant {
 
 export interface RoomInfo {
   id: string; displayName: string; createdBy: string;
-  hasPassword: boolean;
+  hasPassword: boolean; isPermanent?: boolean;
   createdAt: number; expiresAt: number; participantCount: number;
 }
 
@@ -23,45 +23,40 @@ export interface UserEntry { name: string; credits: number; online: boolean; }
 interface SocketContextState {
   socket:        Socket | null;
   isConnected:   boolean;
-  // Identity
   myName:        string;
   participantId: string | null;
   isOwner:       boolean;
   isRM:          boolean;
-  credits:       number;   // -1 = unlimited
-  // Lobby
+  credits:       number;
   rooms:         RoomInfo[];
-  // In-room
-  currentRoomId:     string | null;
+  currentRoomId:      string | null;
   currentRoomCreator: string | null;
-  participants:      SocketParticipant[];
-  isForceMuted:      boolean;
-  scareTriggered:    boolean;
-  flashlightOn:      boolean;
-  // Screen share
+  participants:       SocketParticipant[];
+  isForceMuted:    boolean;
+  scareTriggered:  boolean;
+  flashlightOn:    boolean;
   remoteScreenFromId: string | null;
-  // Stealth
-  isStealthMode: boolean;
-  // Actions
-  registerUser:     (name: string, secret?: string) => void;
-  refreshRooms:     () => void;
-  createRoom:       (displayName: string, password?: string) => void;
-  joinVoiceRoom:    (roomId: string, password?: string, stealthy?: boolean) => void;
-  leaveVoiceRoom:   () => void;
-  setSelfMuted:     (muted: boolean) => void;
-  setSpeaking:      (speaking: boolean) => void;
-  ownerMute:        (targetId: string, muted: boolean) => void;
-  ownerKick:        (targetId: string) => void;
-  ownerScare:       (targetId: string) => void;
-  ownerFlashlight:  (targetId: string, on: boolean) => void;
-  ownerDeleteRoom:  (roomId: string) => void;
-  addCredits:       (targetName: string, amount: number) => void;
-  getUsers:         () => void;
-  userList:         UserEntry[];
-  clearScare:       () => void;
-  lastRoomError:    string | null;
-  clearRoomError:   () => void;
-  toggleStealth:    () => void;
+  isStealthMode:   boolean;
+  userList:        UserEntry[];
+  lastRoomError:   string | null;
+  registerUser:    (name: string, secret?: string) => void;
+  refreshRooms:    () => void;
+  createRoom:      (displayName: string, password?: string) => void;
+  joinVoiceRoom:   (roomId: string, password?: string, stealthy?: boolean) => void;
+  leaveVoiceRoom:  () => void;
+  setSelfMuted:    (muted: boolean) => void;
+  setSpeaking:     (speaking: boolean) => void;
+  ownerMute:       (targetId: string, muted: boolean) => void;
+  ownerKick:       (targetId: string) => void;
+  ownerScare:      (targetId: string) => void;
+  ownerFlashlight: (targetId: string, on: boolean) => void;
+  ownerDeleteRoom: (roomId: string) => void;
+  extendRoomTime:  (roomId: string, hours?: number) => void;
+  addCredits:      (targetName: string, amount: number) => void;
+  getUsers:        () => void;
+  clearScare:      () => void;
+  clearRoomError:  () => void;
+  toggleStealth:   () => void;
   signalScreenShare:(sharing: boolean) => void;
 }
 
@@ -76,8 +71,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [isRM, setIsRM]                   = useState(false);
   const [credits, setCredits]             = useState(0);
   const [rooms, setRooms]                 = useState<RoomInfo[]>([]);
-  const [currentRoomId, setCurrentRoomId]       = useState<string | null>(null);
-  const [currentRoomCreator, setCurrentRoomCreator] = useState<string | null>(null);
+  const [currentRoomId, setCurrentRoomId]             = useState<string | null>(null);
+  const [currentRoomCreator, setCurrentRoomCreator]   = useState<string | null>(null);
   const [participants, setParticipants]   = useState<SocketParticipant[]>([]);
   const [isForceMuted, setIsForceMuted]   = useState(false);
   const [scareTriggered, setScareTriggered] = useState(false);
@@ -87,8 +82,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [isStealthMode, setIsStealthMode] = useState(false);
   const [remoteScreenFromId, setRemoteScreenFromId] = useState<string | null>(null);
 
-  const regDataRef  = useRef<{ name: string; secret?: string } | null>(null);
-  const inRoomRef   = useRef<string | null>(null);
+  const regDataRef = useRef<{ name: string; secret?: string } | null>(null);
+  const inRoomRef  = useRef<string | null>(null);
 
   const { toast }       = useToast();
   const [, setLocation] = useLocation();
@@ -118,33 +113,33 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // ── Identity ───────────────────────────────────────────────────────
+    // Identity
     sock.on("registered", (d: { name: string; isOwner: boolean; isRM: boolean; credits: number | null }) => {
       setMyName(d.name);
       setIsOwner(d.isOwner);
       setIsRM(d.isRM);
       setCredits(d.credits === null ? -1 : d.credits);
-      if (inRoomRef.current) {
-        sock.emit("join-room", { roomId: inRoomRef.current });
-      } else {
-        setLocation("/lobby");
-      }
+      if (inRoomRef.current) sock.emit("join-room", { roomId: inRoomRef.current });
+      else setLocation("/lobby");
     });
 
     sock.on("register-error", (d: { message: string }) =>
       toast({ title: d.message, variant: "destructive" }));
 
-    // ── Lobby ──────────────────────────────────────────────────────────
+    // Lobby
     sock.on("rooms-list", (d: { rooms: RoomInfo[] }) =>
       setRooms(d.rooms.filter(r => r.expiresAt > Date.now())));
 
-    sock.on("new-room",     (d: { room: RoomInfo })                             => setRooms(p => [...p.filter(r => r.id !== d.room.id), d.room]));
-    sock.on("room-updated", (d: { roomId: string; participantCount: number })   => setRooms(p => p.map(r => r.id === d.roomId ? { ...r, participantCount: d.participantCount } : r)));
-    sock.on("room-removed", (d: { roomId: string })                             => setRooms(p => p.filter(r => r.id !== d.roomId)));
-    sock.on("room-created", () => { /* room-joined follows automatically */ });
+    sock.on("new-room",     (d: { room: RoomInfo }) =>
+      setRooms(p => [...p.filter(r => r.id !== d.room.id), d.room]));
 
-    sock.on("delete-room-result", (d: { success: boolean; message: string }) =>
-      toast({ title: d.message, variant: d.success ? "default" : "destructive" }));
+    sock.on("room-updated", (d: { roomId: string; participantCount: number; expiresAt?: number }) =>
+      setRooms(p => p.map(r => r.id === d.roomId
+        ? { ...r, participantCount: d.participantCount, ...(d.expiresAt !== undefined ? { expiresAt: d.expiresAt } : {}) }
+        : r)));
+
+    sock.on("room-removed", (d: { roomId: string }) =>
+      setRooms(p => p.filter(r => r.id !== d.roomId)));
 
     sock.on("room-error", (d: { message: string }) => {
       setLastRoomError(d.message);
@@ -152,7 +147,20 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         toast({ title: d.message, variant: "destructive" });
     });
 
-    // ── In-room ────────────────────────────────────────────────────────
+    sock.on("delete-room-result", (d: { success: boolean; message: string }) =>
+      toast({ title: d.message, variant: d.success ? "default" : "destructive" }));
+
+    sock.on("extend-room-result", (d: { success: boolean; message: string; roomId?: string; expiresAt?: number }) => {
+      if (d.success) {
+        toast({ title: `⏰ ${d.message}` });
+        if (d.roomId && d.expiresAt !== undefined)
+          setRooms(p => p.map(r => r.id === d.roomId ? { ...r, expiresAt: d.expiresAt! } : r));
+      } else {
+        toast({ title: d.message, variant: "destructive" });
+      }
+    });
+
+    // In-room
     sock.on("room-joined", (d: { roomId: string; participants: SocketParticipant[]; createdBy: string }) => {
       setCurrentRoomId(d.roomId);
       setCurrentRoomCreator(d.createdBy);
@@ -162,21 +170,15 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     sock.on("left-room", () => {
-      setCurrentRoomId(null);
-      setCurrentRoomCreator(null);
-      setParticipants([]);
-      inRoomRef.current = null;
-      setRemoteScreenFromId(null);
+      setCurrentRoomId(null); setCurrentRoomCreator(null); setParticipants([]);
+      inRoomRef.current = null; setRemoteScreenFromId(null);
       setLocation("/lobby");
     });
 
     sock.on("room-expired", () => {
-      setCurrentRoomId(null);
-      setCurrentRoomCreator(null);
-      setParticipants([]);
-      inRoomRef.current = null;
-      setRemoteScreenFromId(null);
-      toast({ title: "Room expired (24h)", variant: "destructive" });
+      setCurrentRoomId(null); setCurrentRoomCreator(null); setParticipants([]);
+      inRoomRef.current = null; setRemoteScreenFromId(null);
+      toast({ title: "Room ended", variant: "destructive" });
       setLocation("/lobby");
     });
 
@@ -194,7 +196,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setIsForceMuted(d.muted);
       toast({ title: d.muted ? "Muted by owner" : "Unmuted by owner", variant: d.muted ? "destructive" : "default" });
     });
-    sock.on("scare",      ()                 => setScareTriggered(true));
+    sock.on("scare",      ()                   => setScareTriggered(true));
     sock.on("flashlight", (d: { on: boolean }) => setFlashlightOn(d.on));
     sock.on("kicked", () => {
       inRoomRef.current = null;
@@ -208,7 +210,6 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     sock.on("credits-add-result", (d: { success: boolean; message: string }) =>
       toast({ title: d.success ? "Credits added ✓" : "Failed", description: d.message, variant: d.success ? "default" : "destructive" }));
 
-    // Screen share signals
     sock.on("screen-share-started", (d: { fromId: string }) => setRemoteScreenFromId(d.fromId));
     sock.on("screen-share-stopped", ()                       => setRemoteScreenFromId(null));
 
@@ -226,8 +227,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const refreshRooms    = useCallback(() => socket?.emit("get-rooms"), [socket]);
   const createRoom      = useCallback((d: string, pw?: string) => socket?.emit("create-room", { displayName: d, password: pw }), [socket]);
-  const joinVoiceRoom   = useCallback((roomId: string, pw?: string, stealthy?: boolean) =>
-    socket?.emit("join-room", { roomId, password: pw, stealthy: !!stealthy }), [socket]);
+  const joinVoiceRoom   = useCallback((roomId: string, pw?: string, stealthy?: boolean) => socket?.emit("join-room", { roomId, password: pw, stealthy: !!stealthy }), [socket]);
   const leaveVoiceRoom  = useCallback(() => socket?.emit("leave-room"), [socket]);
   const setSelfMuted    = useCallback((m: boolean) => socket?.emit("self-mute", { muted: m }), [socket]);
   const setSpeaking     = useCallback((s: boolean) => socket?.emit("speaking", { isSpeaking: s }), [socket]);
@@ -236,6 +236,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const ownerScare      = useCallback((t: string) => socket?.emit("owner-scare", { targetId: t }), [socket]);
   const ownerFlashlight = useCallback((t: string, on: boolean) => socket?.emit("owner-flashlight", { targetId: t, on }), [socket]);
   const ownerDeleteRoom = useCallback((roomId: string) => socket?.emit("owner-delete-room", { roomId }), [socket]);
+  const extendRoomTime  = useCallback((roomId: string, hours = 24) => socket?.emit("extend-room-time", { roomId, hours }), [socket]);
   const addCredits      = useCallback((n: string, a: number) => socket?.emit("add-credits", { targetName: n, amount: a }), [socket]);
   const getUsers        = useCallback(() => socket?.emit("get-users"), [socket]);
   const clearScare      = useCallback(() => setScareTriggered(false), []);
@@ -246,17 +247,15 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   return (
     <SocketContext.Provider value={{
-      socket, isConnected,
-      myName, participantId, isOwner, isRM, credits,
+      socket, isConnected, myName, participantId, isOwner, isRM, credits,
       rooms, currentRoomId, currentRoomCreator, participants,
       isForceMuted, scareTriggered, flashlightOn,
-      remoteScreenFromId, isStealthMode,
-      userList, lastRoomError,
+      remoteScreenFromId, isStealthMode, userList, lastRoomError,
       registerUser, refreshRooms, createRoom, joinVoiceRoom, leaveVoiceRoom,
       setSelfMuted, setSpeaking,
       ownerMute, ownerKick, ownerScare, ownerFlashlight, ownerDeleteRoom,
-      addCredits, getUsers, clearScare, clearRoomError,
-      toggleStealth, signalScreenShare,
+      extendRoomTime, addCredits, getUsers,
+      clearScare, clearRoomError, toggleStealth, signalScreenShare,
     }}>
       {children}
     </SocketContext.Provider>

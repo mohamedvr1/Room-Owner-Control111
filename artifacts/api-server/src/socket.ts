@@ -1,5 +1,7 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { randomUUID } from "crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 import { logger } from "./lib/logger";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -13,26 +15,78 @@ interface Participant {
 
 interface Room {
   id: string; displayName: string; createdBy: string;
-  password?: string;
+  password?: string; isPermanent?: boolean;
   createdAt: number; expiresAt: number;
   participants: Map<string, Participant>;
 }
 
-// ── Constants ──────────────────────────────────────────────────────────────
-const OWNER_SECRET  = process.env.OWNER_SECRET  || "147147";
-const SUPER_SECRET  = process.env.SUPER_SECRET  || "1471471";
-const ROOM_TTL      = 24 * 60 * 60 * 1000; // 24 h
-const ROOM_COST     = 20;                   // credits per room creation
-const VR            = "vr:";
+interface PersistedRoom {
+  id: string; displayName: string; createdBy: string;
+  password?: string; isPermanent?: boolean;
+  createdAt: number; expiresAt: number;
+}
 
-// ── Server-wide state ──────────────────────────────────────────────────────
-const userProfiles  = new Map<string, UserProfile>();
-const rooms         = new Map<string, Room>();
+// ── Constants ──────────────────────────────────────────────────────────────
+const OWNER_SECRET = process.env.OWNER_SECRET || "147147";
+const SUPER_SECRET = process.env.SUPER_SECRET || "1471471";
+const ROOM_TTL     = 24 * 60 * 60 * 1000;
+const ROOM_COST    = 20;
+const FOREVER      = Number.MAX_SAFE_INTEGER;
+const VR           = "vr:";
+
+// ── Persistent storage ─────────────────────────────────────────────────────
+const DATA_DIR       = join(process.cwd(), "data");
+const PROFILES_PATH  = join(DATA_DIR, "profiles.json");
+const ROOMS_PATH     = join(DATA_DIR, "rooms.json");
+
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+
+function loadProfiles(): Map<string, UserProfile> {
+  try {
+    const raw = JSON.parse(readFileSync(PROFILES_PATH, "utf-8")) as Record<string, UserProfile>;
+    return new Map(Object.entries(raw));
+  } catch { return new Map(); }
+}
+
+function loadRooms(): Map<string, Room> {
+  try {
+    const raw = JSON.parse(readFileSync(ROOMS_PATH, "utf-8")) as PersistedRoom[];
+    const now = Date.now();
+    const result = new Map<string, Room>();
+    for (const r of raw) {
+      if (r.expiresAt > now) {
+        result.set(r.id, { ...r, participants: new Map() });
+      }
+    }
+    return result;
+  } catch { return new Map(); }
+}
+
+function saveProfiles() {
+  try {
+    writeFileSync(PROFILES_PATH, JSON.stringify(Object.fromEntries(userProfiles), null, 2));
+  } catch (e) { logger.error(e, "Failed to save profiles"); }
+}
+
+function saveRooms() {
+  try {
+    const arr: PersistedRoom[] = Array.from(rooms.values()).map(r => ({
+      id: r.id, displayName: r.displayName, createdBy: r.createdBy,
+      password: r.password, isPermanent: r.isPermanent,
+      createdAt: r.createdAt, expiresAt: r.expiresAt,
+    }));
+    writeFileSync(ROOMS_PATH, JSON.stringify(arr, null, 2));
+  } catch (e) { logger.error(e, "Failed to save rooms"); }
+}
+
+// ── In-memory state ────────────────────────────────────────────────────────
+const userProfiles  = loadProfiles();
+const rooms         = loadRooms();
 const socketToName  = new Map<string, string>();
 const socketToRoom  = new Map<string, string>();
 const activeSockets = new Map<string, string>();
 const socketRoles   = new Map<string, { isOwner: boolean; isRM: boolean }>();
-const stealthSet    = new Set<string>();  // socketIds in stealth mode
+const stealthSet    = new Set<string>();
 
 // Rate limiting
 const eventCounters = new Map<string, { count: number; resetAt: number }>();
@@ -50,17 +104,13 @@ function isRMSocket(socketId: string)     { return socketRoles.get(socketId)?.is
 function isPrivSocket(socketId: string)   { return isOwnerSocket(socketId) || isRMSocket(socketId); }
 
 function sanitizeP(p: Participant) {
-  return {
-    id: p.id, name: p.name, isMuted: p.isMuted,
-    isOwner: p.isOwner, isRM: p.isRM, isSpeaking: p.isSpeaking,
-    isRoomCreator: p.isRoomCreator,
-  };
+  return { id: p.id, name: p.name, isMuted: p.isMuted, isOwner: p.isOwner, isRM: p.isRM, isSpeaking: p.isSpeaking, isRoomCreator: p.isRoomCreator };
 }
 
 function sanitizeRoom(r: Room) {
   return {
     id: r.id, displayName: r.displayName, createdBy: r.createdBy,
-    hasPassword: !!r.password,
+    hasPassword: !!r.password, isPermanent: !!r.isPermanent,
     createdAt: r.createdAt, expiresAt: r.expiresAt,
     participantCount: r.participants.size,
   };
@@ -77,7 +127,6 @@ function activeRooms() {
 
 export function setupSocketIO(io: SocketIOServer) {
 
-  // ── Room-leave helper ───────────────────────────────────────────────────
   function leaveRoom(socket: Socket, roomId: string) {
     const room = rooms.get(roomId);
     const wasStealthy = stealthSet.has(socket.id);
@@ -85,7 +134,7 @@ export function setupSocketIO(io: SocketIOServer) {
       room.participants.delete(socket.id);
       if (!wasStealthy) {
         socket.to(VR + roomId).emit("participant-left", { participantId: socket.id });
-        io.emit("room-updated", { roomId, participantCount: room.participants.size });
+        io.emit("room-updated", { roomId, participantCount: room.participants.size, expiresAt: room.expiresAt });
       }
     }
     stealthSet.delete(socket.id);
@@ -93,20 +142,23 @@ export function setupSocketIO(io: SocketIOServer) {
     socketToRoom.delete(socket.id);
   }
 
-  // ── 24 h room cleanup ───────────────────────────────────────────────────
+  // ── Room cleanup (skip permanent rooms) ────────────────────────────────
   setInterval(() => {
     const now = Date.now();
     for (const [id, room] of rooms) {
+      if (room.isPermanent) continue; // owner rooms live forever
       if (room.expiresAt <= now) {
         for (const [sid] of room.participants) {
           io.to(sid).emit("room-expired", { roomId: id });
           socketToRoom.delete(sid);
+          stealthSet.delete(sid);
         }
         rooms.delete(id);
         io.emit("room-removed", { roomId: id });
         logger.info({ roomId: id }, "Room expired");
       }
     }
+    saveRooms();
   }, 60_000);
 
   // ── Connection ──────────────────────────────────────────────────────────
@@ -129,7 +181,10 @@ export function setupSocketIO(io: SocketIOServer) {
       const rmAuth    = data.secret === SUPER_SECRET;
       socketRoles.set(socket.id, { isOwner: ownerAuth, isRM: rmAuth });
 
-      if (!userProfiles.has(name)) userProfiles.set(name, { credits: 0 });
+      if (!userProfiles.has(name)) {
+        userProfiles.set(name, { credits: 0 });
+        saveProfiles();
+      }
       const profile = userProfiles.get(name)!;
       socketToName.set(socket.id, name);
       activeSockets.set(name, socket.id);
@@ -158,20 +213,27 @@ export function setupSocketIO(io: SocketIOServer) {
       if (!privileged) {
         if (profile.credits < ROOM_COST) { socket.emit("room-error", { message: "NO_CREDITS" }); return; }
         profile.credits -= ROOM_COST;
+        saveProfiles();
         socket.emit("credits-updated", { credits: profile.credits });
       }
 
-      const roomId = randomUUID().slice(0, 8);
-      const now    = Date.now();
+      const roomId    = randomUUID().slice(0, 8);
+      const now       = Date.now();
+      // Owner/RM rooms last forever; others last 24h
+      const permanent = isPrivSocket(socket.id);
+      const expiresAt = permanent ? FOREVER : now + ROOM_TTL;
+
       const room: Room = {
         id: roomId, displayName, createdBy: name, password,
-        createdAt: now, expiresAt: now + ROOM_TTL,
+        isPermanent: permanent,
+        createdAt: now, expiresAt,
         participants: new Map(),
       };
       rooms.set(roomId, room);
+      saveRooms();
       io.emit("new-room", { room: sanitizeRoom(room) });
       socket.emit("room-created", { roomId });
-      logger.info({ roomId, displayName, createdBy: name }, "Room created");
+      logger.info({ roomId, displayName, createdBy: name, permanent }, "Room created");
 
       // Auto-join the creator
       const p: Participant = {
@@ -186,7 +248,7 @@ export function setupSocketIO(io: SocketIOServer) {
         roomId, participants: [sanitizeP(p)],
         createdBy: name,
       });
-      io.emit("room-updated", { roomId, participantCount: 1 });
+      io.emit("room-updated", { roomId, participantCount: 1, expiresAt });
     });
 
     // ── join-room ─────────────────────────────────────────────────────────
@@ -196,8 +258,8 @@ export function setupSocketIO(io: SocketIOServer) {
       if (!name) { socket.emit("room-error", { message: "Not registered" }); return; }
 
       const room = rooms.get(data.roomId ?? "");
-      if (!room)               { socket.emit("room-error", { message: "Room not found" }); return; }
-      if (room.expiresAt <= Date.now()) { rooms.delete(room.id); socket.emit("room-error", { message: "Room has expired" }); return; }
+      if (!room)                { socket.emit("room-error", { message: "Room not found" }); return; }
+      if (room.expiresAt <= Date.now()) { rooms.delete(room.id); saveRooms(); socket.emit("room-error", { message: "Room has expired" }); return; }
 
       // Password check (owner bypasses)
       if (room.password && !isOwnerSocket(socket.id)) {
@@ -206,11 +268,10 @@ export function setupSocketIO(io: SocketIOServer) {
         }
       }
 
-      // Leave current room first
       const curRoomId = socketToRoom.get(socket.id);
       if (curRoomId) leaveRoom(socket, curRoomId);
 
-      const stealthy     = !!data.stealthy && isOwnerSocket(socket.id);
+      const stealthy      = !!data.stealthy && isOwnerSocket(socket.id);
       const isRoomCreator = name === room.createdBy;
       const p: Participant = {
         id: socket.id, name, isMuted: false,
@@ -226,17 +287,12 @@ export function setupSocketIO(io: SocketIOServer) {
       socketToRoom.set(socket.id, room.id);
       await socket.join(VR + room.id);
 
-      // Send room state to joiner (all non-stealthy participants)
       const visibleParticipants = Array.from(room.participants.values()).map(sanitizeP);
-      socket.emit("room-joined", {
-        roomId: room.id,
-        participants: visibleParticipants,
-        createdBy: room.createdBy,
-      });
+      socket.emit("room-joined", { roomId: room.id, participants: visibleParticipants, createdBy: room.createdBy });
 
       if (!stealthy) {
         socket.to(VR + room.id).emit("participant-joined", sanitizeP(p));
-        io.emit("room-updated", { roomId: room.id, participantCount: room.participants.size });
+        io.emit("room-updated", { roomId: room.id, participantCount: room.participants.size, expiresAt: room.expiresAt });
       }
       logger.info({ name, roomId: room.id, stealthy }, "User joined room");
     });
@@ -254,16 +310,36 @@ export function setupSocketIO(io: SocketIOServer) {
       const room = rooms.get(data.roomId);
       if (!room) { socket.emit("error", { message: "Room not found" }); return; }
 
-      // Kick all participants
       for (const [sid] of room.participants) {
         io.to(sid).emit("room-expired", { roomId: room.id });
         socketToRoom.delete(sid);
         stealthSet.delete(sid);
       }
       rooms.delete(room.id);
+      saveRooms();
       io.emit("room-removed", { roomId: room.id });
       socket.emit("delete-room-result", { success: true, message: `Room "${room.displayName}" deleted` });
-      logger.info({ roomId: room.id }, "Room deleted by owner");
+    });
+
+    // ── extend-room-time ──────────────────────────────────────────────────
+    socket.on("extend-room-time", (data: { roomId: string; hours?: number }) => {
+      const name = socketToName.get(socket.id);
+      const room = rooms.get(data.roomId);
+      if (!room || !name) { socket.emit("extend-room-result", { success: false, message: "Room not found" }); return; }
+
+      const isGlobalOwner = isOwnerSocket(socket.id);
+      const isCreator     = name === room.createdBy;
+      if (!isGlobalOwner && !isCreator) { socket.emit("extend-room-result", { success: false, message: "Not authorized" }); return; }
+
+      const addMs = Math.max(1, Math.min(168, data.hours ?? 24)) * 3_600_000;
+      // If room was expiring soon (< 24h remaining), reset from now; otherwise add on top
+      const remaining = room.expiresAt - Date.now();
+      room.expiresAt = remaining < addMs ? Date.now() + addMs : room.expiresAt + addMs;
+      if (!isGlobalOwner) room.isPermanent = false; // creators can extend but not make permanent
+
+      saveRooms();
+      io.emit("room-updated", { roomId: room.id, participantCount: room.participants.size, expiresAt: room.expiresAt });
+      socket.emit("extend-room-result", { success: true, roomId: room.id, expiresAt: room.expiresAt, message: `+${data.hours ?? 24}h added` });
     });
 
     // ── Screen share signals ──────────────────────────────────────────────
@@ -272,7 +348,7 @@ export function setupSocketIO(io: SocketIOServer) {
       if (!roomId) return;
       const room = rooms.get(roomId);
       const name = socketToName.get(socket.id);
-      if (!room || name !== room.createdBy) return; // only room creator
+      if (!room || name !== room.createdBy) return;
       socket.to(VR + roomId).emit("screen-share-started", { fromId: socket.id, fromName: name });
     });
 
@@ -284,15 +360,15 @@ export function setupSocketIO(io: SocketIOServer) {
 
     // ── WebRTC relay ──────────────────────────────────────────────────────
     socket.on("rtc-offer",  (d: { targetId: string; sdp: unknown }) => {
-      if (!rateLimit(socket.id, 30)) return;
+      if (!rateLimit(socket.id, 50)) return;
       socket.to(d.targetId).emit("rtc-offer",  { fromId: socket.id, sdp: d.sdp });
     });
     socket.on("rtc-answer", (d: { targetId: string; sdp: unknown }) => {
-      if (!rateLimit(socket.id, 30)) return;
+      if (!rateLimit(socket.id, 50)) return;
       socket.to(d.targetId).emit("rtc-answer", { fromId: socket.id, sdp: d.sdp });
     });
     socket.on("rtc-ice",    (d: { targetId: string; candidate: unknown }) => {
-      if (!rateLimit(socket.id, 100)) return;
+      if (!rateLimit(socket.id, 200)) return;
       socket.to(d.targetId).emit("rtc-ice",    { fromId: socket.id, candidate: d.candidate });
     });
 
@@ -342,6 +418,7 @@ export function setupSocketIO(io: SocketIOServer) {
       if (!userProfiles.has(targetName)) userProfiles.set(targetName, { credits: 0 });
       const profile = userProfiles.get(targetName)!;
       profile.credits += amount;
+      saveProfiles();
 
       socket.emit("credits-add-result", {
         success: true,
@@ -356,7 +433,6 @@ export function setupSocketIO(io: SocketIOServer) {
       logger.info({ targetName, amount }, "Credits added");
     });
 
-    // ── get-users ─────────────────────────────────────────────────────────
     socket.on("get-users", () => {
       if (!isOwnerSocket(socket.id)) return;
       const users = Array.from(userProfiles.entries()).map(([name, profile]) => ({

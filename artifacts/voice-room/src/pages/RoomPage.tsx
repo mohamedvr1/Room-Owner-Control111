@@ -4,29 +4,39 @@ import { useWebRTC, NetworkQuality } from "@/hooks/useWebRTC";
 import { useSpeakingDetection } from "@/hooks/useSpeakingDetection";
 import { ParticipantCard } from "@/components/ParticipantCard";
 import { ScaryOverlay } from "@/components/ScaryOverlay";
-import { Mic, MicOff, LogOut, Ghost, Volume2, VolumeX, Radio, Zap, AudioLines } from "lucide-react";
+import {
+  Mic, MicOff, LogOut, Ghost, Volume2, VolumeX, Radio,
+  Zap, AudioLines, Monitor, MonitorOff, X,
+} from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 
 export default function RoomPage() {
   const {
     participants, participantId, isOwner, isConnected,
-    setSelfMuted, leaveVoiceRoom, flashlightOn, isForceMuted, currentRoomId,
+    setSelfMuted, leaveVoiceRoom, flashlightOn, isForceMuted,
+    currentRoomId, currentRoomCreator,
+    remoteScreenFromId, signalScreenShare,
   } = useSocket();
 
-  const [, setLocation]     = useLocation();
-  const { toast }           = useToast();
+  const [, setLocation] = useLocation();
+  const { toast }       = useToast();
 
   const [localStream, setLocalStream]         = useState<MediaStream | null>(null);
   const [processedStream, setProcessedStream] = useState<MediaStream | null>(null);
 
-  const [isMuted, setIsMuted]       = useState(false);
-  const [isSpeakerOff, setIsSpeakerOff] = useState(false);
-  const [isPTT, setIsPTT]           = useState(false);
-  const [pttActive, setPttActive]   = useState(false);
-  const [isBoosted, setIsBoosted]   = useState(false);     // owner: mic gain ×2.8
-  const [isDeepVoice, setIsDeepVoice] = useState(false);   // owner: bass-boost
-  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [isMuted, setIsMuted]             = useState(false);
+  const [isSpeakerOff, setIsSpeakerOff]   = useState(false);
+  const [isPTT, setIsPTT]                 = useState(false);
+  const [pttActive, setPttActive]         = useState(false);
+  const [isBoosted, setIsBoosted]         = useState(false);
+  const [isDeepVoice, setIsDeepVoice]     = useState(false);
+  const [confirmLeave, setConfirmLeave]   = useState(false);
+
+  // Screen sharing
+  const [screenStream, setScreenStream]         = useState<MediaStream | null>(null);
+  const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
+  const screenVideoRef                          = useRef<HTMLVideoElement | null>(null);
 
   const boostCtxRef   = useRef<AudioContext | null>(null);
   const boostGainRef  = useRef<GainNode | null>(null);
@@ -35,11 +45,23 @@ export default function RoomPage() {
 
   const effectiveMuted = isPTT ? !pttActive : (isMuted || isForceMuted);
 
-  // WebRTC — pass existing participants so the hook can initiate calls on mount
-  const { networkQuality } = useWebRTC(processedStream, isSpeakerOff, participants, participantId);
+  // Am I the room creator?
+  const iAmCreator = !!(participantId && participants.find(p => p.id === participantId && p.isRoomCreator));
+
+  // Remote video callback from useWebRTC
+  const handleRemoteVideo = useCallback((stream: MediaStream | null) => {
+    setRemoteVideoStream(stream);
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = stream;
+      if (stream) screenVideoRef.current.play().catch(() => {});
+    }
+  }, []);
+
+  const { networkQuality, addScreenTrack, removeScreenTrack } =
+    useWebRTC(processedStream, isSpeakerOff, participants, participantId, handleRemoteVideo);
+
   useSpeakingDetection(localStream, effectiveMuted);
 
-  // Redirect if not in a room
   useEffect(() => {
     if (!participantId || !currentRoomId) setLocation("/lobby");
   }, [participantId, currentRoomId, setLocation]);
@@ -50,7 +72,10 @@ export default function RoomPage() {
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1 },
+          audio: {
+            echoCancellation: true, noiseSuppression: true,
+            autoGainControl: true, sampleRate: 48000, channelCount: 1,
+          },
           video: false,
         });
         setLocalStream(stream);
@@ -61,16 +86,14 @@ export default function RoomPage() {
     return () => { stream?.getTracks().forEach(t => t.stop()); };
   }, [toast]);
 
-  // ── Owner audio processing chain ────────────────────────────────────────
-  // Guest: processedStream = localStream (raw, no processing)
-  // Owner: localStream → AudioContext:
-  //        Source → HighPass(80Hz) → LowShelf(deep voice) → LowPass(4kHz) → GainNode(boost) → Dest
+  // Owner: AudioContext chain (bass boost + gain)
   useEffect(() => {
     if (!localStream) return;
     if (!isOwner) { setProcessedStream(localStream); return; }
 
     let ctx: AudioContext;
-    try { ctx = new AudioContext({ sampleRate: 48000 }); } catch { setProcessedStream(localStream); return; }
+    try { ctx = new AudioContext({ sampleRate: 48000 }); }
+    catch { setProcessedStream(localStream); return; }
     boostCtxRef.current = ctx;
 
     const src      = ctx.createMediaStreamSource(localStream);
@@ -98,16 +121,17 @@ export default function RoomPage() {
     ctx.resume().catch(() => {});
     setProcessedStream(dest.stream);
 
-    return () => { ctx.close().catch(() => {}); boostCtxRef.current = null; boostGainRef.current = null; deepFilterRef.current = null; };
+    return () => {
+      ctx.close().catch(() => {});
+      boostCtxRef.current = null; boostGainRef.current = null; deepFilterRef.current = null;
+    };
   }, [localStream, isOwner]);
 
-  // Smooth boost transitions
   useEffect(() => {
     if (!boostGainRef.current) return;
     boostGainRef.current.gain.setTargetAtTime(isBoosted ? 2.8 : 1.0, boostCtxRef.current?.currentTime ?? 0, 0.05);
   }, [isBoosted]);
 
-  // Smooth deep voice transitions
   useEffect(() => {
     if (!deepFilterRef.current) return;
     deepFilterRef.current.gain.setTargetAtTime(isDeepVoice ? 14 : 0, boostCtxRef.current?.currentTime ?? 0, 0.05);
@@ -139,23 +163,79 @@ export default function RoomPage() {
     return () => { flashStreamRef.current?.getTracks().forEach(t => t.stop()); };
   }, [flashlightOn]);
 
-  // Overall network quality
+  // Screen share
+  const handleScreenShare = useCallback(async () => {
+    if (screenStream) {
+      // Stop sharing
+      const track = screenStream.getVideoTracks()[0];
+      if (track) removeScreenTrack(track);
+      screenStream.getTracks().forEach(t => t.stop());
+      setScreenStream(null);
+      signalScreenShare(false);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+        audio: false,
+      });
+      const track = stream.getVideoTracks()[0];
+      track.onended = () => {
+        removeScreenTrack(track);
+        setScreenStream(null);
+        signalScreenShare(false);
+      };
+      setScreenStream(stream);
+      addScreenTrack(track, stream);
+      signalScreenShare(true);
+    } catch { /* user cancelled */ }
+  }, [screenStream, addScreenTrack, removeScreenTrack, signalScreenShare]);
+
+  // Clean up screen share on unmount
+  useEffect(() => {
+    return () => {
+      if (screenStream) {
+        const track = screenStream.getVideoTracks()[0];
+        if (track) removeScreenTrack(track);
+        screenStream.getTracks().forEach(t => t.stop());
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Update remote video element when remoteVideoStream changes
+  useEffect(() => {
+    if (screenVideoRef.current && remoteVideoStream) {
+      screenVideoRef.current.srcObject = remoteVideoStream;
+      screenVideoRef.current.play().catch(() => {});
+    }
+  }, [remoteVideoStream]);
+
+  // Clear remote video if no one is sharing
+  useEffect(() => {
+    if (!remoteScreenFromId) setRemoteVideoStream(null);
+  }, [remoteScreenFromId]);
+
   const overallQuality = (): NetworkQuality => {
     const order: NetworkQuality[] = ["poor", "fair", "good", "excellent", "unknown"];
     let worst: NetworkQuality = "unknown";
-    for (const q of networkQuality.values()) {
+    for (const q of networkQuality.values())
       if (order.indexOf(q) < order.indexOf(worst)) worst = q;
-    }
     return worst;
   };
   const oqColor: Record<NetworkQuality, string> = {
     excellent: "text-emerald-400", good: "text-lime-400",
-    fair: "text-amber-400",       poor: "text-red-400", unknown: "text-muted-foreground",
+    fair: "text-amber-400", poor: "text-red-400", unknown: "text-muted-foreground",
   };
+
+  const sharerName = remoteScreenFromId
+    ? participants.find(p => p.id === remoteScreenFromId)?.name ?? "Someone"
+    : null;
 
   if (!participantId || !currentRoomId) return null;
 
   const speakerCount = participants.filter(p => p.isSpeaking && !p.isMuted).length;
+  void speakerCount;
 
   return (
     <div className="min-h-dvh flex flex-col bg-background relative overflow-hidden">
@@ -163,17 +243,14 @@ export default function RoomPage() {
 
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-primary/5 blur-[80px] rounded-full" />
-        {speakerCount > 0 && (
-          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 w-[300px] h-[150px] bg-cyan-500/8 blur-[60px] rounded-full" />
-        )}
       </div>
 
-      {/* Header */}
+      {/* ── Header ────────────────────────────────────────────────────────── */}
       <header className="relative z-10 flex items-center justify-between px-5 py-4
         border-b border-white/6 bg-background/60 backdrop-blur-xl">
         <div className="flex items-center gap-2.5">
           <Ghost className="w-5 h-5 text-primary" />
-          <span className="font-mono font-bold text-lg tracking-tight">GhostRoom</span>
+          <span className="font-mono font-bold text-lg tracking-tight">{currentRoomCreator ? `${currentRoomCreator}'s Room` : "GhostRoom"}</span>
         </div>
         <div className="flex items-center gap-3">
           {networkQuality.size > 0 && (
@@ -186,7 +263,29 @@ export default function RoomPage() {
         </div>
       </header>
 
-      {/* Participants grid */}
+      {/* ── Remote screen share overlay ────────────────────────────────────── */}
+      {(remoteVideoStream || remoteScreenFromId) && (
+        <div className="relative z-10 mx-4 mt-3 rounded-2xl overflow-hidden bg-black shadow-2xl ring-1 ring-primary/20">
+          <div className="absolute top-2 left-3 z-10 text-white/60 text-xs font-mono flex items-center gap-1">
+            <Monitor className="w-3 h-3" /> {sharerName} is sharing
+          </div>
+          <button onClick={() => { setRemoteVideoStream(null); }}
+            className="absolute top-2 right-2 z-10 w-7 h-7 rounded-lg bg-black/60 flex items-center justify-center
+              text-white/60 hover:text-white hover:bg-black/80 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+          <video
+            ref={el => {
+              screenVideoRef.current = el;
+              if (el && remoteVideoStream) { el.srcObject = remoteVideoStream; el.play().catch(() => {}); }
+            }}
+            autoPlay playsInline
+            className="w-full max-h-[45vh] object-contain bg-black"
+          />
+        </div>
+      )}
+
+      {/* ── Participants grid ──────────────────────────────────────────────── */}
       <main className="flex-1 relative z-10 p-4 overflow-y-auto">
         <div className="max-w-4xl mx-auto">
           {participants.length === 0 ? (
@@ -210,10 +309,10 @@ export default function RoomPage() {
         </div>
       </main>
 
-      {/* Control bar */}
+      {/* ── Control bar ──────────────────────────────────────────────────── */}
       <footer className="relative z-10 px-4 py-5 border-t border-white/6 bg-background/60 backdrop-blur-xl">
         <div className="max-w-sm mx-auto">
-          <div className="flex items-center justify-center gap-2.5">
+          <div className="flex items-center justify-center gap-2 flex-wrap">
 
             {/* Speaker */}
             <button onClick={() => setIsSpeakerOff(p => !p)}
@@ -229,9 +328,9 @@ export default function RoomPage() {
                 className={`rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 border
                   ${isBoosted ? "bg-amber-500/20 text-amber-300 border-amber-400/40 shadow-[0_0_14px_rgba(251,191,36,0.3)]"
                              : "glass text-muted-foreground border-transparent hover:text-amber-300"}`}
-                style={{ width: 48, height: 48 }} title="Mic Boost (Owner)">
+                style={{ width: 48, height: 48 }}>
                 <Zap className="w-4 h-4" />
-                <span className="text-[8px] font-mono uppercase">{isBoosted ? "2.8×" : "boost"}</span>
+                <span className="text-[8px] font-mono">{isBoosted ? "2.8×" : "boost"}</span>
               </button>
             )}
 
@@ -241,17 +340,29 @@ export default function RoomPage() {
                 className={`rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 border
                   ${isDeepVoice ? "bg-violet-500/20 text-violet-300 border-violet-400/40 shadow-[0_0_14px_rgba(139,92,246,0.3)]"
                                 : "glass text-muted-foreground border-transparent hover:text-violet-300"}`}
-                style={{ width: 48, height: 48 }} title="Deep Voice (Owner)">
+                style={{ width: 48, height: 48 }}>
                 <AudioLines className="w-4 h-4" />
-                <span className="text-[8px] font-mono uppercase">{isDeepVoice ? "deep" : "voice"}</span>
+                <span className="text-[8px] font-mono">{isDeepVoice ? "deep" : "voice"}</span>
               </button>
             )}
 
-            {/* PTT mode toggle */}
+            {/* Room creator: Screen Share */}
+            {iAmCreator && (
+              <button onClick={handleScreenShare}
+                className={`rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 border
+                  ${screenStream ? "bg-cyan-500/20 text-cyan-300 border-cyan-400/40 shadow-[0_0_14px_rgba(34,211,238,0.3)] animate-pulse"
+                                 : "glass text-muted-foreground border-transparent hover:text-cyan-300"}`}
+                style={{ width: 48, height: 48 }}>
+                {screenStream ? <MonitorOff className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+                <span className="text-[8px] font-mono">{screenStream ? "stop" : "share"}</span>
+              </button>
+            )}
+
+            {/* PTT toggle */}
             <button onClick={() => setIsPTT(p => !p)}
               className={`rounded-xl flex items-center justify-center transition-all active:scale-95
                 ${isPTT ? "bg-primary/20 text-primary ring-1 ring-primary/30" : "glass text-muted-foreground/50 hover:text-muted-foreground"}`}
-              style={{ width: 36, height: 36 }} title="Push-to-talk">
+              style={{ width: 36, height: 36 }}>
               <Radio className="w-4 h-4" />
             </button>
 
@@ -263,7 +374,7 @@ export default function RoomPage() {
                   ${pttActive ? "bg-cyan-500 shadow-[0_0_30px_rgba(34,211,238,0.6)] scale-105 text-white" : "glass-strong text-muted-foreground"}`}
                 style={{ width: 72, height: 72 }}>
                 <Mic className="w-7 h-7" />
-                <span className="text-[9px] font-mono uppercase">{pttActive ? "Live" : "Hold"}</span>
+                <span className="text-[9px] font-mono">{pttActive ? "Live" : "Hold"}</span>
               </button>
             ) : (
               <button onClick={() => { if (!isForceMuted) setIsMuted(p => !p); }} disabled={isForceMuted}
@@ -285,19 +396,25 @@ export default function RoomPage() {
             </button>
           </div>
 
+          {/* Status line */}
           <div className="text-center mt-3 h-4">
             {isForceMuted && <p className="text-xs text-destructive/70 font-mono animate-pulse">muted by owner</p>}
-            {isOwner && (isBoosted || isDeepVoice) && !isForceMuted && (
+            {!isForceMuted && isOwner && (isBoosted || isDeepVoice) && (
               <p className="text-xs text-amber-400/60 font-mono">
                 {[isBoosted && "2.8× boost", isDeepVoice && "deep voice"].filter(Boolean).join(" · ")}
               </p>
             )}
-            {isPTT && !isBoosted && !isDeepVoice && <p className="text-xs text-muted-foreground/50 font-mono">hold mic to speak</p>}
+            {!isForceMuted && !isBoosted && !isDeepVoice && screenStream && (
+              <p className="text-xs text-cyan-400/60 font-mono animate-pulse">● sharing screen</p>
+            )}
+            {isPTT && !isBoosted && !isDeepVoice && !screenStream && !isForceMuted && (
+              <p className="text-xs text-muted-foreground/50 font-mono">hold mic to speak</p>
+            )}
           </div>
         </div>
       </footer>
 
-      {/* Leave dialog */}
+      {/* ── Leave dialog ──────────────────────────────────────────────────── */}
       {confirmLeave && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="glass-strong rounded-2xl p-6 max-w-[300px] w-full text-center space-y-5 shadow-2xl animate-slide-up">

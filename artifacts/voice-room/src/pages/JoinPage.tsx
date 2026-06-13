@@ -21,7 +21,7 @@ export default function JoinPage() {
 
   // Tap counter for hidden auth
   const tapCountRef = useRef(0);
-  const tapTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const tapTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Load from localStorage
   useEffect(() => {

@@ -1,0 +1,6 @@
+{
+  "name": "GhostRoom",
+  "description": "Real-time voice room and owner control application with dynamic audio slots, permissions, room borders, and PayMob payment support",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
